@@ -75,7 +75,7 @@
             font-weight: 500; 
             animation: fadeIn 0.5s ease-in-out; 
             min-width: 200px;
-            transition: background-color 0.3s, border-color 0.3s;
+            transition: background-color 0.3s, border-color 0.3s, color 0.3s;
         }
         body[data-theme="light"] #unified-alert { 
             background-color: rgba(255, 255, 255, 0.85); 
@@ -96,6 +96,18 @@
             color: white;
         }
         body[data-theme="light"] #unified-alert.alert-success { background-color: #218838; }
+
+        /* --- NEW: Warning color for overspeeding --- */
+        #unified-alert.alert-warning {
+            background-color: #b28c0e; /* Dark amber */
+            border-color: rgba(255, 193, 7, 0.5);
+            color: white;
+        }
+        body[data-theme="light"] #unified-alert.alert-warning {
+            background-color: #ffc107; /* Standard warning yellow */
+            color: #212529; /* Dark text for readability */
+            border-color: rgba(0,0,0,0.15);
+        }
 
         #alert-title { margin: 0 0 8px 0; font-size: 1em; }
         #alert-body { display: flex; flex-direction: column; align-items: center; font-size: 0.9em; }
@@ -269,6 +281,10 @@
                 </div>
 
                 <div class="setting-group-title" data-i18n-key="dataGroupTitle">資料管理</div>
+                <div class="setting-item">
+                    <label data-i18n-key="autoUpdateLabel">僅在Wi-Fi下自動更新</label>
+                    <label class="toggle-switch"> <input type="checkbox" id="auto-update-toggle"> <span class="slider"></span> </label>
+                </div>
                 <div id="last-updated-info" style="font-size: 0.8em; opacity: 0.7; text-align: center; margin-bottom: 10px;"></div>
                 <button id="manual-update-btn" data-i18n-key="manualUpdateBtn" style="width: 100%; padding: 10px; border-radius: 8px; border: 1px solid #007bff; background: transparent; color: #007bff; font-size: 0.9em; cursor: pointer; transition: background 0.2s, color 0.2s;">手動更新測速點資料</button>
                 
@@ -277,7 +293,6 @@
                     <label data-i18n-key="themeLabel">日間模式</label>
                     <label class="toggle-switch"> <input type="checkbox" id="theme-toggle"> <span class="slider"></span> </label>
                 </div>
-                 <!-- --- NEW (Language): Language toggle switch --- -->
                 <div class="setting-item">
                     <label data-i18n-key="languageLabel">English Mode</label>
                     <label class="toggle-switch"> <input type="checkbox" id="language-toggle"> <span class="slider"></span> </label>
@@ -310,7 +325,8 @@
             const manualUpdateBtn = document.getElementById('manual-update-btn');
             const lastUpdatedInfo = document.getElementById('last-updated-info');
             const soundToggleContainer = document.getElementById('sound-toggle-container');
-            const languageToggle = document.getElementById('language-toggle'); // New language toggle
+            const languageToggle = document.getElementById('language-toggle');
+            const autoUpdateToggle = document.getElementById('auto-update-toggle');
 
             // --- Constants ---
             const MAX_SPEED = 200, START_ANGLE = -135, END_ANGLE = 135, ANGLE_RANGE = END_ANGLE - START_ANGLE;
@@ -318,7 +334,7 @@
             const MAX_HISTORY_POINTS = 5; 
             const CONFIRMATION_THRESHOLD = 2; 
 
-            // --- NEW (Language): Centralized translation object ---
+            // --- Centralized translation object ---
             const translations = {
                 'zh-Hant': {
                     // Settings UI
@@ -329,6 +345,7 @@
                     smartDistanceLabel: '智慧警示距離',
                     manualDistanceLabel: '手動警示距離',
                     dataGroupTitle: '資料管理',
+                    autoUpdateLabel: '僅在Wi-Fi下自動更新',
                     manualUpdateBtn: '手動更新測速點資料',
                     manualUpdateBtnProgress: '更新中...',
                     appearanceGroupTitle: '外觀',
@@ -349,6 +366,17 @@
                     updateFailBody: '無法取得最新資料，將繼續使用舊有資料。',
                     downloadFailTitle: '資料下載失敗',
                     downloadFailBody: '無法取得測速照相資料。請檢查網路連線。',
+                    wifiUpdatePausedTitle: '自動更新暫停',
+                    wifiUpdatePausedBody: '為節省您的行動數據，測速點資料將於連接 Wi-Fi 後自動更新。',
+                    // --- NEW: Location error translations ---
+                    locationPermErrorTitle: '定位權限錯誤',
+                    locationPermErrorBody: '請啟用定位服務以使用完整功能。',
+                    locationUnavailableErrorTitle: '定位錯誤',
+                    locationUnavailableErrorBody: '目前無法取得您的位置資訊。',
+                    locationTimeoutErrorTitle: '定位錯誤',
+                    locationTimeoutErrorBody: '取得位置資訊超時。',
+                    unknownLocationErrorTitle: '定位錯誤',
+                    unknownLocationErrorBody: '發生未知的定位錯誤。',
                     // Units
                     kmUnit: '公里',
                     mUnit: '公尺',
@@ -356,6 +384,7 @@
                     ttsIntro: (limit) => `前方有測速照相，限速 ${limit} 公里`,
                     ttsOverspeed: '，已超速',
                     ttsPassed: '通過',
+                    tts50m: '剩下50公尺',
                 },
                 'en': {
                     // Settings UI
@@ -366,6 +395,7 @@
                     smartDistanceLabel: 'Smart Alert Distance',
                     manualDistanceLabel: 'Manual Alert Distance',
                     dataGroupTitle: 'Data Management',
+                    autoUpdateLabel: 'Auto-update on Wi-Fi only',
                     manualUpdateBtn: 'Update Camera Data Manually',
                     manualUpdateBtnProgress: 'Updating...',
                     appearanceGroupTitle: 'Appearance',
@@ -386,6 +416,17 @@
                     updateFailBody: 'Could not fetch latest data. Using cached data.',
                     downloadFailTitle: 'Data Download Failed',
                     downloadFailBody: 'Could not fetch speed camera data. Please check your connection.',
+                    wifiUpdatePausedTitle: 'Auto-Update Paused',
+                    wifiUpdatePausedBody: 'To save mobile data, camera data will update automatically when connected to Wi-Fi.',
+                    // --- NEW: Location error translations ---
+                    locationPermErrorTitle: 'Location Permission Error',
+                    locationPermErrorBody: 'Please enable location services to use all features.',
+                    locationUnavailableErrorTitle: 'Location Error',
+                    locationUnavailableErrorBody: 'Could not get your current location.',
+                    locationTimeoutErrorTitle: 'Location Error',
+                    locationTimeoutErrorBody: 'Location request timed out.',
+                    unknownLocationErrorTitle: 'Location Error',
+                    unknownLocationErrorBody: 'An unknown location error occurred.',
                     // Units
                     kmUnit: 'km',
                     mUnit: 'm',
@@ -393,6 +434,7 @@
                     ttsIntro: (limit) => `Speed camera ahead. Speed limit is ${limit} kilometers per hour.`,
                     ttsOverspeed: ', you are overspeeding.',
                     ttsPassed: 'Passed.',
+                    tts50m: '50 meters remaining',
                 }
             };
 
@@ -400,8 +442,11 @@
             let cameraData = [];
             let currentAlertLimit = null;
             let isAlertingForCameraId = null;
-            // --- MODIFIED (Language): Added language to settings ---
-            let settings = { alertDistance: 500, soundEnabled: true, theme: 'dark', alertsEnabled: true, smartDistanceEnabled: false, language: 'zh-Hant' };
+            let settings = { 
+                alertDistance: 500, soundEnabled: true, theme: 'dark', 
+                alertsEnabled: true, smartDistanceEnabled: false, language: 'zh-Hant',
+                autoUpdateOnWifi: true 
+            };
             let hasInteracted = false;
             let lastKnownSpeed = 0;
             let customAlertTimer = null;
@@ -415,13 +460,15 @@
             let speechQueue = [];
             let isSpeaking = false;
             let announcedDistances = new Set();
+            const ANNOUNCEMENT_THRESHOLDS = [1000, 900, 800, 700, 600, 500, 400, 300, 200, 100, 50];
+
 
             document.body.addEventListener('click', () => { hasInteracted = true; }, { once: true });
 
             function initializeUI() {
                 console.log("UI Initializing...");
                 loadSettings();
-                updateLanguageUI(); // Set initial language
+                updateLanguageUI();
                 updateClock();
                 setInterval(updateClock, 1000);
                 requestAnimationFrame(() => {
@@ -434,7 +481,6 @@
             }
 
             async function startBackgroundServices() {
-                // ... (rest of the function is unchanged)
                 console.log("Background services starting...");
                 await loadCameraData();
                 displayLastUpdateTime();
@@ -445,12 +491,12 @@
                     });
                      console.log("Geolocation watch position started.");
                 } else {
-                    showCustomAlert('定位錯誤', '您的瀏覽器不支援定位功能。', 'error', 0); // This alert is not translated as it's a very basic fallback
+                    const t = translations[settings.language];
+                    showCustomAlert(t.locationUnavailableErrorTitle, t.locationUnavailableErrorBody, 'error', 0);
                 }
             }
 
             async function fetchAndCacheCameraData() {
-                // ... (function is largely unchanged, just error messages might need translation if shown to user)
                 const apiUrl = 'https://cors-anywhere.potatosserver.workers.dev/?url=https://od.moi.gov.tw/api/v1/rest/datastore/A01010000C-000674-011';
                 try {
                     const response = await fetch(apiUrl);
@@ -474,27 +520,51 @@
                 }
             }
             
+            function isWifiConnection() {
+                if ('connection' in navigator && navigator.connection.type) {
+                    return navigator.connection.type === 'wifi';
+                }
+                return false;
+            }
+
             async function loadCameraData() {
-                // ... (function is largely unchanged, just error messages might need translation if shown to user)
                 let cachedData, cachedTimestamp;
                 try {
                     cachedData = JSON.parse(localStorage.getItem('cameraData'));
                     cachedTimestamp = parseInt(localStorage.getItem('cameraDataTimestamp'), 10);
                 } catch (e) { console.error("讀取快取失敗:", e); }
 
-                if (cachedData && cachedTimestamp && (Date.now() - cachedTimestamp < CACHE_DURATION_MS)) {
+                const isCacheExpired = !cachedTimestamp || (Date.now() - cachedTimestamp >= CACHE_DURATION_MS);
+
+                if (cachedData && !isCacheExpired) {
                     cameraData = cachedData;
                     console.log(`資料從本地快取載入 (${cameraData.length} 筆)`);
                 } else {
-                    console.log("本地快取過期或不存在，正在從網路下載...");
-                    const success = await fetchAndCacheCameraData();
-                    if (!success && cachedData) {
-                        cameraData = cachedData;
-                        const t = translations[settings.language];
-                        showCustomAlert(t.updateFailTitle, t.updateFailBody, 'error', 6000);
+                    console.log("本地快取過期或不存在。");
+                    const canAutoUpdate = !settings.autoUpdateOnWifi || (settings.autoUpdateOnWifi && isWifiConnection());
+
+                    if (canAutoUpdate) {
+                        console.log("正在從網路下載更新...");
+                        const success = await fetchAndCacheCameraData();
+                        if (!success && cachedData) {
+                            cameraData = cachedData;
+                            const t = translations[settings.language];
+                            showCustomAlert(t.updateFailTitle, t.updateFailBody, 'error', 6000);
+                        }
+                    } else {
+                        console.log("快取過期但偵測到非 WiFi 連線，將暫緩自動更新。");
+                        if (cachedData) {
+                            cameraData = cachedData;
+                            const t = translations[settings.language];
+                            showCustomAlert(t.wifiUpdatePausedTitle, t.wifiUpdatePausedBody, 'success', 8000);
+                        } else {
+                             const t = translations[settings.language];
+                             showCustomAlert(t.downloadFailTitle, t.downloadFailBody, 'error', 8000);
+                        }
                     }
                 }
             }
+
 
             async function handleManualUpdate() {
                 const t = translations[settings.language];
@@ -515,7 +585,6 @@
                 lastUpdatedInfo.textContent = timestamp ? `${t.lastUpdatePrefix}: ${new Date(timestamp).toLocaleString()}` : t.lastUpdateNone;
             }
 
-            // --- NEW (Language): Function to update all UI text elements ---
             function updateLanguageUI() {
                 const lang = settings.language;
                 const t = translations[lang];
@@ -525,7 +594,6 @@
                         el.textContent = t[key];
                     }
                 });
-                 // Also update dynamic elements that don't have the data attribute
                 displayLastUpdateTime();
                 updateClock();
             }
@@ -539,7 +607,8 @@
                 alertsEnabledToggle.checked = settings.alertsEnabled;
                 smartDistanceToggle.checked = settings.smartDistanceEnabled;
                 themeToggle.checked = settings.theme === 'light';
-                languageToggle.checked = settings.language === 'en'; // Set toggle based on language
+                languageToggle.checked = settings.language === 'en';
+                autoUpdateToggle.checked = settings.autoUpdateOnWifi;
                 
                 document.body.setAttribute('data-theme', settings.theme);
                 updateSettingsUI();
@@ -560,11 +629,15 @@
                 closeSettingsBtn.addEventListener('click', () => settingsModal.style.display = 'none');
                 manualUpdateBtn.addEventListener('click', handleManualUpdate);
                 
+                autoUpdateToggle.addEventListener('change', (e) => {
+                    settings.autoUpdateOnWifi = e.target.checked;
+                    saveSettings();
+                });
+
                 languageToggle.addEventListener('change', (e) => {
                     settings.language = e.target.checked ? 'en' : 'zh-Hant';
                     updateLanguageUI();
                     saveSettings();
-                    // If an alert is active, update its text
                     if (isCameraAlertActive) {
                        showAlert(lastCameraInfo.distance, lastCameraInfo.limit);
                     }
@@ -595,12 +668,11 @@
             }
             
             function updateSpeed(position) { 
-                // ... (function is unchanged)
                 let speedInMps = position.coords.speed; if (speedInMps !== null && speedInMps >= 0) { let speedInKph = speedInMps * 3.6; lastKnownSpeed = speedInKph; const displaySpeed = Math.min(speedInKph, MAX_SPEED); speedValueElement.textContent = Math.round(speedInKph); const rotationAngle = START_ANGLE + ((displaySpeed / MAX_SPEED) * ANGLE_RANGE); needleElement.style.transform = `rotate(${rotationAngle}deg)`; speedValueElement.classList.toggle('overspeed', currentAlertLimit !== null && Math.round(speedInKph) > currentAlertLimit); } else { lastKnownSpeed = 0; speedValueElement.textContent = '0'; needleElement.style.transform = `rotate(${START_ANGLE}deg)`; speedValueElement.classList.remove('overspeed'); } 
             }
             function getActiveAlertDistance() { return settings.smartDistanceEnabled ? Math.max(300, Math.min(1500, lastKnownSpeed * 10)) : settings.alertDistance; }
 
-            // --- MODIFIED (Language): checkNearbyCameras now uses translation object for TTS ---
+            // --- MODIFIED checkNearbyCameras FUNCTION ---
             function checkNearbyCameras(currentPosition) {
                 if (!settings.alertsEnabled || isPermissionErrorActive) {
                     hideAlert(); return;
@@ -612,38 +684,48 @@
                     const activeCamera = cameraData.find(c => c.id === isAlertingForCameraId);
                     if (activeCamera) {
                         const currentDistanceToCamera = calculateDistance(userLat, userLon, activeCamera.lat, activeCamera.lon);
-                        const currentBearingToCamera = calculateBearing(userLat, userLon, activeCamera.lat, activeCamera.lon);
-                        let passed = (currentDistanceToCamera > lastDistanceToAlertingCamera + 5) || (lastBearingToCamera !== null && Math.min(Math.abs(currentBearingToCamera - lastBearingToCamera), 360 - Math.abs(currentBearingToCamera - lastBearingToCamera)) > 90);
+                        const bearingToCamera = calculateBearing(userLat, userLon, activeCamera.lat, activeCamera.lon);
+                        const angleDifference = Math.abs(bearingToCamera - userHeading);
+                        const relativeBearing = Math.min(angleDifference, 360 - angleDifference);
 
-                        if (passed) {
-                            speak(t.ttsPassed, true);
+                        // --- NEW: Improved "Passed Camera" Logic ---
+                        // A relative bearing > 95 degrees means the camera is now beside or behind you.
+                        // The distance check is a fallback for situations with erratic heading data, especially when close.
+                        if (relativeBearing > 95 || (currentDistanceToCamera > lastDistanceToAlertingCamera + 10 && lastDistanceToAlertingCamera < 100)) {
+                            console.log(`Passed camera (Relative Bearing: ${relativeBearing.toFixed(1)}°). Hiding alert.`);
+                            speak(t.ttsPassed, true); // Interrupting speech for "passed"
                             hideAlert();
                             return;
-                        } else {
-                           showAlert(currentDistanceToCamera, activeCamera.limit);
-                           lastDistanceToAlertingCamera = currentDistanceToCamera;
-                           lastBearingToCamera = currentBearingToCamera;
-                           
-                           const roundedDistance = Math.round(currentDistanceToCamera / 100) * 100;
-                           const isOverspeeding = Math.round(lastKnownSpeed) > activeCamera.limit;
-                           let shouldAnnounce = false;
-
-                           if (roundedDistance > 0 && !announcedDistances.has(roundedDistance)) {
-                               if (isOverspeeding || (currentDistanceToCamera > 500 && announcedDistances.size === 0) || currentDistanceToCamera <= 500) {
-                                   shouldAnnounce = true;
-                               }
-                           }
-                           
-                           if (shouldAnnounce) {
-                               let distanceText = formatDistanceText(roundedDistance, settings.language);
-                               let speechText = distanceText;
-                               if (isOverspeeding) speechText += t.ttsOverspeed;
-                               speak(speechText);
-                               announcedDistances.add(roundedDistance);
-                           }
-                           return; 
                         }
-                    } else { hideAlert(); }
+                        // --- END OF NEW LOGIC ---
+
+                        showAlert(currentDistanceToCamera, activeCamera.limit);
+                        lastDistanceToAlertingCamera = currentDistanceToCamera;
+
+                        const isOverspeeding = Math.round(lastKnownSpeed) > activeCamera.limit;
+                        const activeAlertDist = getActiveAlertDistance();
+                        const relevantThresholds = ANNOUNCEMENT_THRESHOLDS.filter(t => t <= activeAlertDist);
+
+                        for (const threshold of relevantThresholds) {
+                            if (currentDistanceToCamera < threshold && !announcedDistances.has(threshold)) {
+                                let speechText;
+                                if (threshold === 50) {
+                                    speechText = isOverspeeding ? t.tts50m : formatDistanceText(50, settings.language);
+                                } else {
+                                    speechText = formatDistanceText(threshold, settings.language);
+                                }
+                                if (isOverspeeding) {
+                                    speechText += t.ttsOverspeed;
+                                }
+                                speak(speechText);
+                                announcedDistances.add(threshold);
+                                break; 
+                            }
+                        }
+                        return;
+                    } else {
+                        hideAlert();
+                    }
                 }
 
                 if (userHeading === null || (userSpeed * 3.6) < 1) { hideAlert(); return; }
@@ -666,9 +748,9 @@
                     if (alertCandidate.confirmCount >= CONFIRMATION_THRESHOLD && isAlertingForCameraId === null) {
                         isAlertingForCameraId = closestCameraInProximity.id;
                         lastDistanceToAlertingCamera = minDistance;
-                        lastBearingToCamera = calculateBearing(userLat, userLon, closestCameraInProximity.lat, closestCameraInProximity.lon);
                         showAlert(minDistance, closestCameraInProximity.limit);
-                        speak(t.ttsIntro(closestCameraInProximity.limit));
+                        // --- MODIFICATION: Make initial alert speech interrupt other speech ---
+                        speak(t.ttsIntro(closestCameraInProximity.limit), true);
                     }
                 } else {
                     if (isAlertingForCameraId === null) hideAlert();
@@ -676,10 +758,9 @@
                 }
             }
 
-            function showCustomAlert(title, message, type = 'error', duration = 6000) {
-                // ... (function is unchanged)
+            function showCustomAlert(title, message, type = 'info', duration = 6000) {
                 clearTimeout(customAlertTimer);
-                unifiedAlertElement.classList.remove('alert-error', 'alert-success');
+                unifiedAlertElement.classList.remove('alert-error', 'alert-success', 'alert-warning');
                 if (type) unifiedAlertElement.classList.add(`alert-${type}`);
                 alertTitleElement.textContent = title;
                 alertBodyElement.innerHTML = `<span>${message}</span>`;
@@ -697,16 +778,29 @@
                 }
             }
             
-            // --- MODIFIED (Language): showAlert now uses translation object ---
             function showAlert(distance, limit, forceDisplay = false) {
                 isCameraAlertActive = true;
                 lastCameraInfo = { distance, limit };
-                if (!forceDisplay && (unifiedAlertElement.classList.contains('alert-error') || unifiedAlertElement.classList.contains('alert-success'))) return;
+                
+                if (!forceDisplay && (unifiedAlertElement.classList.contains('alert-error') && !isPermissionErrorActive || unifiedAlertElement.classList.contains('alert-success'))) {
+                    return;
+                }
                 
                 const t = translations[settings.language];
-                unifiedAlertElement.classList.remove('alert-error', 'alert-success');
+                
+                unifiedAlertElement.classList.remove('alert-success', 'alert-warning');
+                
                 currentAlertLimit = limit;
-                let distanceText = distance > 1000 ? `${(distance / 1000).toFixed(1)} ${t.kmUnit}` : `${Math.round(distance)} ${t.mUnit}`;
+
+                const isOverspeeding = Math.round(lastKnownSpeed) > limit;
+                if (isOverspeeding) {
+                    unifiedAlertElement.classList.add('alert-warning');
+                }
+                
+                const displayDistance = Math.ceil(distance / 50) * 50;
+                let distanceText = displayDistance > 1000 
+                    ? `${(displayDistance / 1000).toFixed(1)} ${t.kmUnit}` 
+                    : `${displayDistance} ${t.mUnit}`;
                 
                 alertTitleElement.textContent = t.alertTitle;
                 alertBodyElement.innerHTML = `<span>${t.alertDistance}: ${distanceText}</span><span>${t.alertSpeedLimit}: ${limit} km/h</span>`;
@@ -715,8 +809,15 @@
                 speedLimitSignElement.classList.add('visible');
             }
             
+            // --- MODIFIED hideAlert FUNCTION ---
             function hideAlert() {
-                // ... (function is unchanged)
+                // --- MODIFICATION: Immediately stop and clear any pending speech ---
+                if ('speechSynthesis' in window) {
+                    speechSynthesis.cancel();
+                }
+                speechQueue = [];
+                // --- END MODIFICATION ---
+
                 isCameraAlertActive = false;
                 if (unifiedAlertElement.style.display === 'block' && !isPermissionErrorActive) {
                      if (!unifiedAlertElement.classList.contains('alert-error') && !unifiedAlertElement.classList.contains('alert-success')) {
@@ -734,34 +835,38 @@
             }
 
             function handleError(error) { 
-                // ... (function is unchanged, errors are technical and not translated for simplicity)
-                 let message; 
+                const t = translations[settings.language];
+                let title, message;
                 switch (error.code) { 
                     case error.PERMISSION_DENIED: 
                         isPermissionErrorActive = true;
-                        message = "請啟用定位服務以使用完整功能。/ Please enable location services."; 
-                        showCustomAlert('定位權限錯誤 / Location Permission Error', message, 'error', 0);
+                        title = t.locationPermErrorTitle;
+                        message = t.locationPermErrorBody;
+                        showCustomAlert(title, message, 'error', 0);
                         break; 
                     case error.POSITION_UNAVAILABLE: 
-                        message = "目前無法取得您的位置資訊。/ Could not get location."; 
-                        showCustomAlert('定位錯誤 / Location Error', message, 'error');
+                        title = t.locationUnavailableErrorTitle;
+                        message = t.locationUnavailableErrorBody;
+                        showCustomAlert(title, message, 'error');
                         break; 
                     case error.TIMEOUT: 
-                        message = "取得位置資訊超時。/ Location request timed out."; 
-                        showCustomAlert('定位錯誤 / Location Error', message, 'error');
+                        title = t.locationTimeoutErrorTitle;
+                        message = t.locationTimeoutErrorBody;
+                        showCustomAlert(title, message, 'error');
                         break; 
                     default: 
-                        message = "發生未知的定位錯誤。/ An unknown location error occurred."; 
-                        showCustomAlert('定位錯誤 / Location Error', message, 'error');
+                        title = t.unknownLocationErrorTitle;
+                        message = t.unknownLocationErrorBody;
+                        showCustomAlert(title, message, 'error');
                         break; 
                 } 
             }
             
             function handlePositionUpdate(position) {
-                // ... (function is unchanged)
                 if (isPermissionErrorActive) {
                     isPermissionErrorActive = false;
                     unifiedAlertElement.style.display = 'none';
+                    unifiedAlertElement.classList.remove('alert-error');
                 }
                 
                 positionHistory.push(position);
@@ -777,7 +882,6 @@
                 }
             }
 
-            // --- MODIFIED (Language): `speak` now sets utterance language dynamically ---
             function speak(text, interrupt = false) {
                 if (!settings.soundEnabled || !hasInteracted || !('speechSynthesis' in window)) return;
                 if (interrupt && isSpeaking) {
@@ -802,7 +906,6 @@
             }
             
             function getSmoothedPosition(fallbackPosition) {
-                // ... (function is unchanged)
                 if (positionHistory.length < 2) return fallbackPosition;
                 let avgLat = 0, avgLon = 0, avgSpeed = 0, avgHeading = 0;
                 let validReadings = 0;
@@ -828,18 +931,15 @@
             }
 
             function getDynamicToleranceAngle(speedKph) {
-                // ... (function is unchanged)
                 if (speedKph > 80) return 20;
                 if (speedKph > 40) return 25;
                 return 30;
             }
 
             function createTicks() { 
-                // ... (function is unchanged)
                 gaugeElement.innerHTML = ''; const container = document.querySelector('.speedometer-wrapper'); if (!container) return; const diameter = Math.min(container.offsetWidth, container.offsetHeight); if (diameter === 0) return; const radius = diameter / 2; const centerX = container.offsetWidth / 2, centerY = container.offsetHeight / 2; const numberRadius = radius - (diameter > 300 ? 40 : 30); const tickOuterRadius = radius - 5; const totalTickCount = (MAX_SPEED / 20) * 2; for (let i = 0; i <= totalTickCount; i++) { const angle = START_ANGLE + (i / totalTickCount) * ANGLE_RANGE; const isMajorTick = i % 2 === 0; const mathAngleRad = (angle - 90) * (Math.PI / 180); const tick = document.createElement('div'); tick.className = isMajorTick ? 'tick major' : 'tick minor'; const tickStartRadius = isMajorTick ? (tickOuterRadius - 15) : (tickOuterRadius - 10); const tickCenterRadius = (tickStartRadius + tickOuterRadius) / 2; tick.style.left = `${centerX + tickCenterRadius * Math.cos(mathAngleRad)}px`; tick.style.top = `${centerY + tickCenterRadius * Math.sin(mathAngleRad)}px`; tick.style.transform = `translate(-50%, -50%) rotate(${angle}deg)`; gaugeElement.appendChild(tick); if (isMajorTick) { const tickValue = Math.round((i / totalTickCount) * MAX_SPEED); const numX = centerX + numberRadius * Math.cos(mathAngleRad); const numY = centerY + numberRadius * Math.sin(mathAngleRad); const tickNumber = document.createElement('div'); tickNumber.className = 'tick-number'; tickNumber.innerText = tickValue; tickNumber.style.left = `${numX}px`; tickNumber.style.top = `${numY}px`; gaugeElement.appendChild(tickNumber); } } 
             }
             
-            // --- MODIFIED (Language): updateClock now uses translation object for AM/PM ---
             function updateClock() {
                 const t = translations[settings.language];
                 const now = new Date();
@@ -850,7 +950,6 @@
                 clockElement.textContent = `${period} ${hours}:${minutes}`;
             }
 
-            // --- NEW (Language): Helper to format distance for TTS ---
             function formatDistanceText(distance, lang) {
                 const t = translations[lang];
                 if (distance >= 1000) {
