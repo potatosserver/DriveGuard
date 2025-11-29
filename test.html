@@ -1,0 +1,453 @@
+<!DOCTYPE html>
+<html lang="zh-TW">
+<head>
+  <meta charset="utf-8" />
+  <title>3D 語音導航 (修復版)</title>
+  <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
+
+  <!-- MapLibre GL JS -->
+  <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
+  <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+
+  <!-- Material Icons -->
+  <link href="https://fonts.googleapis.com/icon?family=Material+Icons" rel="stylesheet">
+
+  <style>
+    body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Arial, sans-serif; overflow: hidden; }
+    #map { position: absolute; top: 0; bottom: 0; width: 100%; z-index: 1; }
+
+    /* --- 搜尋面板 --- */
+    #search-panel {
+        position: absolute; top: 10px; left: 50%; transform: translateX(-50%);
+        width: 90%; max-width: 400px; z-index: 100; background: white;
+        border-radius: 8px; box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        padding: 10px; display: flex; flex-direction: column; gap: 8px; transition: top 0.3s;
+    }
+    .input-group { display: flex; align-items: center; background: #f5f5f5; border-radius: 4px; padding: 4px 8px; }
+    .input-group input { border: none; background: transparent; flex: 1; padding: 8px; font-size: 16px; outline: none; }
+    .input-icon { color: #666; margin-right: 5px; cursor: pointer; }
+    .icon-btn { cursor: pointer; padding: 5px; color: #555; }
+    
+    #suggestions { max-height: 200px; overflow-y: auto; border-top: 1px solid #eee; display: none; }
+    .suggestion-item { padding: 10px; cursor: pointer; border-bottom: 1px solid #f9f9f9; }
+    .suggestion-item:hover { background: #f0f0f0; }
+
+    /* --- 底部導航資訊 --- */
+    #nav-footer {
+        position: absolute; bottom: 0; left: 0; width: 100%; background: white; z-index: 1000;
+        border-top-left-radius: 16px; border-top-right-radius: 16px;
+        box-shadow: 0 -2px 10px rgba(0,0,0,0.2); 
+        transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.25, 0.46, 0.45, 0.94); 
+        padding-bottom: 20px;
+    }
+    #nav-footer.show { transform: translateY(0); }
+
+    .nav-info { padding: 15px 20px; display: flex; justify-content: space-between; align-items: center; }
+    
+    #btn-start-nav {
+        background: #1a73e8; color: white; border: none; padding: 12px 24px;
+        border-radius: 24px; font-size: 16px; cursor: pointer; box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+        font-weight: bold;
+    }
+    #btn-start-nav:disabled { background: #ccc; cursor: not-allowed; }
+
+    /* --- 導航指令 (修正版面與加入聲音按鈕) --- */
+    #turn-instruction {
+        position: absolute; 
+        top: 10px; 
+        left: 50%; /* 1. 改用 left 50% */
+        transform: translateX(-50%); /* 2. 搭配 transform 置中 */
+        width: 90%; 
+        max-width: 400px; /* 3. 限制最大寬度 */
+        box-sizing: border-box; /* 4. 確保內距不會撐大容器 */
+        
+        background: #00796b; 
+        color: white;
+        padding: 15px; 
+        border-radius: 8px; 
+        z-index: 1001; 
+        display: none; 
+        box-shadow: 0 4px 10px rgba(0,0,0,0.3);
+    }
+
+    .turn-header {
+        display: flex;
+        justify-content: space-between;
+        align-items: flex-start;
+    }
+    
+    .turn-content {
+        flex: 1;
+        padding-right: 10px;
+    }
+
+    #voice-btn {
+        background: none;
+        border: none;
+        color: rgba(255,255,255,0.8);
+        cursor: pointer;
+        padding: 4px;
+    }
+
+    #btn-exit-nav {
+        position: absolute; bottom: 30px; right: 20px; background: #d32f2f; color: white;
+        width: 56px; height: 56px; border-radius: 50%; border: none; display: none;
+        z-index: 1002; cursor: pointer; align-items: center; justify-content: center; box-shadow: 0 4px 8px rgba(0,0,0,0.3);
+    }
+
+    #loading-indicator {
+      position: absolute; top: 50%; left: 50%; transform: translate(-50%, -50%);
+      background-color: rgba(0, 0, 0, 0.7); color: white; padding: 15px 25px;
+      border-radius: 8px; z-index: 2000; display: none; font-size: 16px;
+    }
+  </style>
+</head>
+<body>
+
+<div id="map"></div>
+
+<div id="search-panel">
+    <div class="input-group">
+        <span class="material-icons input-icon" style="color:#1a73e8">my_location</span>
+        <input type="text" id="start-input" placeholder="起點 (預設我的位置)" oninput="handleInput('start', this.value)" />
+        <span class="material-icons icon-btn" onclick="resetToUserLocation()" title="使用定位">gps_fixed</span>
+    </div>
+    
+    <div style="padding-left: 20px; height: 10px; display: flex; flex-direction: column; justify-content: center;">
+        <div style="width: 2px; height: 2px; background: #ccc; margin: 1px 0;"></div>
+        <div style="width: 2px; height: 2px; background: #ccc; margin: 1px 0;"></div>
+        <div style="width: 2px; height: 2px; background: #ccc; margin: 1px 0;"></div>
+    </div>
+
+    <div class="input-group">
+        <span class="material-icons input-icon" style="color:#d93025">location_on</span>
+        <input type="text" id="end-input" placeholder="輸入目的地 或 長按地圖" oninput="handleInput('end', this.value)" />
+        <span class="material-icons icon-btn" onclick="clearEnd()" title="清除">close</span>
+    </div>
+    <div id="suggestions"></div>
+</div>
+
+<div id="nav-footer">
+    <div class="nav-info">
+        <div>
+            <div style="font-size: 24px; font-weight: bold; color: #1a73e8;" id="route-time">計算中...</div>
+            <div style="color: #666;" id="route-dist">--</div>
+        </div>
+        <button id="btn-start-nav" onclick="enterNavigationMode()">開始導航</button>
+    </div>
+</div>
+
+<!-- 導航指令 UI (包含聲音按鈕) -->
+<div id="turn-instruction">
+    <div class="turn-header">
+        <div class="turn-content">
+            <div style="font-size: 20px; font-weight: bold; display: flex; align-items: center; gap: 10px; margin-bottom: 5px;">
+                <span class="material-icons" id="turn-icon">straight</span>
+                <span id="turn-text">直行</span>
+            </div>
+            <div style="font-size: 16px; opacity: 0.9;" id="turn-dist">0 公尺後</div>
+        </div>
+        <!-- 聲音開關按鈕 -->
+        <button id="voice-btn" onclick="toggleVoice()">
+            <span class="material-icons" id="voice-icon">volume_up</span>
+        </button>
+    </div>
+</div>
+
+<button id="btn-exit-nav" onclick="exitNavigationMode()">
+    <span class="material-icons">close</span>
+</button>
+
+<div id="loading-indicator">路徑計算中...</div>
+
+<script>
+  // API Key
+  const graphHopperKey = '7cb4eb19-e0f4-40a3-a5e0-f2c039366f32'; 
+  const style3D = 'https://tiles.openfreemap.org/styles/liberty';
+
+  let map, geolocateControl;
+  let startCoords = null, endCoords = null;
+  let startMarker = null, endMarker = null;
+  let currentRoutePath = null; 
+  let isNavigating = false;
+  let activeSearchType = 'end';
+  
+  // 語音相關變數
+  let isVoiceEnabled = true;
+  let lastSpokenText = ""; // 避免重複播報
+  const synth = window.speechSynthesis;
+
+  const loadingIndicator = document.getElementById('loading-indicator');
+  const navFooter = document.getElementById('nav-footer');
+
+  function initMap() {
+    map = new maplibregl.Map({
+      container: 'map',
+      style: style3D,
+      center: [121.5, 25.04],
+      zoom: 15,
+      pitch: 45,
+      bearing: 0,
+      antialias: true
+    });
+
+    map.on('load', () => {
+        geolocateControl = new maplibregl.GeolocateControl({
+            positionOptions: { enableHighAccuracy: true },
+            trackUserLocation: true,
+            showUserHeading: true
+        });
+        map.addControl(geolocateControl);
+        
+        resetToUserLocation();
+
+        map.on('contextmenu', (e) => setEndPoint(e.lngLat, "地圖選取點"));
+    });
+  }
+
+  function resetToUserLocation() {
+      if (isNavigating) return;
+      geolocateControl.trigger();
+      geolocateControl.once('geolocate', (e) => {
+          const userCoords = { lng: e.coords.longitude, lat: e.coords.latitude };
+          startCoords = userCoords;
+          document.getElementById('start-input').value = "我的位置";
+          if (startMarker) { startMarker.remove(); startMarker = null; }
+          map.flyTo({ center: userCoords, zoom: 15, pitch: 45 });
+          if (endCoords) calculateRoute();
+      });
+  }
+
+  function setStartPoint(lngLat, name) {
+      if (isNavigating) return;
+      startCoords = lngLat;
+      document.getElementById('start-input').value = name;
+      document.getElementById('suggestions').style.display = 'none';
+      if (startMarker) startMarker.remove();
+      startMarker = new maplibregl.Marker({ color: '#1a73e8', draggable: true }).setLngLat(lngLat).addTo(map);
+      startMarker.on('dragend', () => {
+          startCoords = startMarker.getLngLat();
+          if (endCoords) calculateRoute();
+      });
+      map.flyTo({ center: lngLat, zoom: 15 });
+      if (endCoords) calculateRoute();
+  }
+
+  function setEndPoint(lngLat, name) {
+      if (isNavigating) return;
+      
+      endCoords = lngLat;
+      document.getElementById('end-input').value = name;
+      document.getElementById('suggestions').style.display = 'none';
+
+      navFooter.classList.add('show');
+      document.getElementById('route-time').innerText = "計算中...";
+      document.getElementById('route-dist').innerText = "--";
+      document.getElementById('btn-start-nav').disabled = true;
+
+      if (endMarker) endMarker.remove();
+      endMarker = new maplibregl.Marker({ color: '#d93025', draggable: true }).setLngLat(lngLat).addTo(map);
+      
+      endMarker.on('dragend', () => {
+          endCoords = endMarker.getLngLat();
+          if (startCoords) calculateRoute();
+      });
+
+      if (startCoords) calculateRoute();
+  }
+
+  let debounceTimer;
+  function handleInput(type, val) {
+      activeSearchType = type;
+      clearTimeout(debounceTimer);
+      if(!val) { document.getElementById('suggestions').style.display = 'none'; return; }
+      debounceTimer = setTimeout(async () => {
+          try {
+              const res = await fetch(`https://nominatim.openstreetmap.org/search?format=json&q=${encodeURIComponent(val)}&limit=5&addressdetails=1&countrycodes=tw`);
+              const data = await res.json();
+              const container = document.getElementById('suggestions');
+              container.innerHTML = '';
+              if (data.length > 0) {
+                  container.style.display = 'block';
+                  data.forEach(item => {
+                      const div = document.createElement('div');
+                      div.className = 'suggestion-item';
+                      div.innerHTML = `<strong>${item.display_name.split(',')[0]}</strong><br><small style="color:#666">${item.display_name.split(',').slice(1,3).join('')}</small>`;
+                      div.onclick = () => {
+                          const coords = { lng: parseFloat(item.lon), lat: parseFloat(item.lat) };
+                          if (activeSearchType === 'start') setStartPoint(coords, item.display_name.split(',')[0]);
+                          else setEndPoint(coords, item.display_name.split(',')[0]);
+                      };
+                      container.appendChild(div);
+                  });
+              }
+          } catch(e){}
+      }, 500);
+  }
+
+  async function calculateRoute() {
+      if (!startCoords || !endCoords) return;
+      loadingIndicator.style.display = 'block';
+
+      const params = new URLSearchParams();
+      params.append('key', graphHopperKey);
+      params.append('profile', 'car');
+      params.append('locale', 'zh-TW');
+      params.append('elevation', 'false');
+      params.append('instructions', 'true');
+      params.append('points_encoded', 'false');
+      params.append('point', `${startCoords.lat},${startCoords.lng}`);
+      params.append('point', `${endCoords.lat},${endCoords.lng}`);
+
+      try {
+          const res = await fetch(`https://graphhopper.com/api/1/route?${params.toString()}`);
+          
+          if (!res.ok) {
+              const err = await res.json();
+              throw new Error(err.message || "API Error");
+          }
+
+          const data = await res.json();
+          if (data.paths && data.paths.length > 0) {
+              const path = data.paths[0];
+              currentRoutePath = path;
+              
+              drawRoute(path.points);
+
+              document.getElementById('route-time').innerText = Math.round(path.time/60000) + " 分";
+              document.getElementById('route-dist').innerText = (path.distance/1000).toFixed(1) + " 公里";
+              document.getElementById('btn-start-nav').disabled = false;
+              navFooter.classList.add('show');
+              
+              const bounds = new maplibregl.LngLatBounds();
+              path.points.coordinates.forEach(c => bounds.extend(c));
+              map.fitBounds(bounds, { padding: 100 });
+          } else {
+              alert("找不到路徑");
+          }
+      } catch (e) { 
+          console.error(e); 
+          document.getElementById('route-time').innerText = "錯誤";
+          if (e.message.includes("Credit")) {
+             alert("API 額度已用完");
+          } else {
+             alert("路徑計算失敗: " + e.message);
+          }
+      } finally { 
+          loadingIndicator.style.display = 'none'; 
+      }
+  }
+
+  function drawRoute(geoJsonData) {
+      if (map.getSource('route')) {
+          map.getSource('route').setData(geoJsonData);
+      } else {
+          map.addSource('route', { type: 'geojson', data: { type: 'Feature', geometry: geoJsonData } });
+          map.addLayer({
+              id: 'route', type: 'line', source: 'route',
+              layout: { 'line-join': 'round', 'line-cap': 'round' },
+              paint: { 'line-color': '#4285F4', 'line-width': 8, 'line-opacity': 0.8 }
+          });
+          map.addLayer({
+              id: 'route-arrows', type: 'symbol', source: 'route',
+              layout: {
+                  'symbol-placement': 'line', 'text-field': '▶',
+                  'text-size': 20, 'symbol-spacing': 100, 'text-keep-upright': false
+              },
+              paint: { 'text-color': '#fff', 'text-halo-color': '#4285F4', 'text-halo-width': 2 }
+          });
+      }
+  }
+
+  function enterNavigationMode() {
+      if (!currentRoutePath) return;
+      isNavigating = true;
+      lastSpokenText = ""; // 重置語音記憶
+      
+      document.getElementById('search-panel').style.top = '-300px';
+      navFooter.classList.remove('show');
+      document.getElementById('turn-instruction').style.display = 'block';
+      document.getElementById('btn-exit-nav').style.display = 'flex';
+
+      map.easeTo({ pitch: 60, bearing: 0, zoom: 19, center: startCoords });
+      
+      if (document.getElementById('start-input').value === "我的位置") {
+          geolocateControl.trigger(); 
+      }
+
+      if (currentRoutePath.instructions && currentRoutePath.instructions.length > 0) {
+          updateTurnInfo(currentRoutePath.instructions[0]);
+      }
+  }
+
+  function exitNavigationMode() {
+      isNavigating = false;
+      synth.cancel(); // 停止語音
+      document.getElementById('search-panel').style.top = '10px';
+      document.getElementById('turn-instruction').style.display = 'none';
+      document.getElementById('btn-exit-nav').style.display = 'none';
+      navFooter.classList.add('show');
+      map.easeTo({ pitch: 45, zoom: 15, bearing: 0 });
+  }
+
+  function updateTurnInfo(ins) {
+      document.getElementById('turn-text').innerText = ins.text;
+      document.getElementById('turn-dist').innerText = Math.round(ins.distance) + " 公尺後";
+      let icon = 'straight';
+      if (ins.sign === -2 || ins.sign === -1) icon = 'turn_left';
+      if (ins.sign === 2 || ins.sign === 1) icon = 'turn_right';
+      if (ins.sign === 4) icon = 'flag';
+      document.getElementById('turn-icon').innerText = icon;
+
+      // 觸發語音播報
+      speak(ins.text);
+  }
+
+  // --- 語音功能 ---
+  function toggleVoice() {
+      isVoiceEnabled = !isVoiceEnabled;
+      const icon = document.getElementById('voice-icon');
+      if (isVoiceEnabled) {
+          icon.innerText = 'volume_up';
+          speak("開啟語音導航");
+      } else {
+          icon.innerText = 'volume_off';
+          synth.cancel();
+      }
+  }
+
+  function speak(text) {
+      if (!isVoiceEnabled || !text || text === lastSpokenText) return;
+      
+      // 停止上一句
+      synth.cancel();
+
+      const utterance = new SpeechSynthesisUtterance(text);
+      utterance.lang = 'zh-TW'; // 設定中文
+      utterance.rate = 1; // 語速
+      
+      // 嘗試尋找中文語音包，提升品質
+      const voices = synth.getVoices();
+      const zhVoice = voices.find(v => v.lang.includes('zh-TW') || v.lang.includes('zh-CN'));
+      if (zhVoice) utterance.voice = zhVoice;
+
+      synth.speak(utterance);
+      lastSpokenText = text;
+  }
+
+  function clearEnd() {
+      document.getElementById('end-input').value = '';
+      document.getElementById('suggestions').style.display = 'none';
+      if (endMarker) endMarker.remove();
+      endMarker = null; endCoords = null;
+      if (map.getSource('route')) map.getSource('route').setData({type:'FeatureCollection', features:[]});
+      
+      navFooter.classList.remove('show');
+      currentRoutePath = null;
+  }
+
+  initMap();
+
+</script>
+</body>
+</html>
