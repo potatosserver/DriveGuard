@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (即時距離運算版)</title>
+  <title>3D 智能語音導航 (鎖定視角+穩定路線版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -389,6 +389,7 @@
       document.getElementById('loading-text').innerText = isNavigating ? "偏離路徑，重新規劃中..." : "路徑計算中...";
       mainBtn.disabled = true;
 
+      // 確保清除舊圖層
       clearRouteLayers();
 
       const params = new URLSearchParams();
@@ -411,6 +412,7 @@
               currentRoutePath = path;
               fullRouteCoords = path.points.coordinates;
               
+              // 繪製順序：先灰，後藍，確保藍色在上方
               drawBaseRoute(fullRouteCoords);
               updateBlueRoute(fullRouteCoords);
               
@@ -435,7 +437,6 @@
                   fullRouteCoords.forEach(c => bounds.extend(c));
                   map.fitBounds(bounds, { padding: 80 });
               } else {
-                  // 初始化顯示第一個指令
                   updateTurnInfo(currentRoutePath.instructions[0], currentRoutePath.instructions[0].distance);
               }
               renderRouteSteps();
@@ -451,7 +452,7 @@
   }
 
   // ==========================================
-  // 繪圖與圖層管理
+  // 繪圖與圖層管理 (修復版)
   // ==========================================
   function drawBaseRoute(geoJsonCoords) {
       const sourceId = 'final-route-bg-source';
@@ -472,13 +473,16 @@
           paint: { 
               'line-color': '#bdbdbd', 
               'line-width': 12, 
-              'line-opacity': 0.8,
-              'line-pitch-alignment': 'map'
+              'line-opacity': 0.8
+              // 移除 line-pitch-alignment: 'map' 以確保可見性
           }
       });
   }
 
   function updateBlueRoute(remainingCoords) {
+      // 安全性檢查：如果座標為空或無效，不處理
+      if (!remainingCoords || remainingCoords.length < 2) return;
+
       const fgSourceId = 'active-route-source';
       const fgLayerId = 'active-route-fg';
       const data = { type: 'Feature', geometry: { type: 'LineString', coordinates: remainingCoords } };
@@ -496,10 +500,15 @@
               paint: { 
                   'line-color': '#4285F4', 
                   'line-width': 12, 
-                  'line-opacity': 1.0,
-                  'line-pitch-alignment': 'map'
+                  'line-opacity': 1.0
+                  // 移除 line-pitch-alignment: 'map'
               }
           });
+      }
+
+      // 關鍵修復：強制將藍色圖層移到最上方
+      if (map.getLayer(fgLayerId)) {
+          map.moveLayer(fgLayerId); 
       }
   }
 
@@ -522,6 +531,11 @@
       lastNavCoords = null;
       
       document.body.classList.add('nav-active');
+
+      // --- 鎖定使用者手動視角 ---
+      map.dragRotate.disable();
+      map.touchZoomRotate.disableRotation();
+      // 保持 dragPan (平移) 可用，方便查看周圍
 
       document.getElementById('search-panel').style.top = '-400px'; 
       navFooter.classList.remove('show');
@@ -550,7 +564,6 @@
           const snapResult = getNearestPointOnLine([rawLng, rawLat], fullRouteCoords);
           const deviationDist = snapResult.distance * 1000; 
 
-          // 閥值設定
           const RECALC_THRESHOLD = 50; 
 
           if (deviationDist > RECALC_THRESHOLD && !isRecalculating) {
@@ -598,11 +611,9 @@
           if (shouldUpdateBearing) lastNavCoords = [rawLng, rawLat];
 
           const remainingPath = fullRouteCoords.slice(snapResult.index);
-          if (remainingPath.length > 1) {
-              updateBlueRoute(remainingPath);
-          }
+          updateBlueRoute(remainingPath); // 現在這個函數內有安全檢查
 
-          // *** 傳入吸附點，進行精確距離運算 ***
+          // 即時距離運算
           updateInstructionByProgress(snapResult);
       };
 
@@ -621,6 +632,7 @@
           });
       }
 
+      // 再次確保藍色路線完整顯示
       updateBlueRoute(fullRouteCoords);
       speak("開始導航");
   }
@@ -629,6 +641,10 @@
       isNavigating = false;
       isUserInteracting = false;
       document.body.classList.remove('nav-active');
+
+      // --- 解鎖視角 ---
+      map.dragRotate.enable();
+      map.touchZoomRotate.enableRotation();
 
       if(snapBackTimer) clearTimeout(snapBackTimer);
       synth.cancel();
@@ -698,38 +714,27 @@
       return { x: xx, y: yy, dist: Math.sqrt(dx * dx + dy * dy) };
   }
   
-  // 新增：計算真實幾何距離
   function measureDist(p1, p2) {
-      // 簡單的平面投影計算 (適用於導航短距離，效能佳)
       const cosLat = Math.cos(p1[1] * Math.PI / 180);
       const dx = (p2[0] - p1[0]) * cosLat;
       const dy = p2[1] - p1[1];
-      // 1度約111000公尺
       return Math.sqrt(dx*dx + dy*dy) * 111000;
   }
 
-  // 新增：計算精確剩餘距離
   function getExactRemainingDistance(snappedPoint, currentIndex, instructionEndIndex, allCoords) {
       let totalDist = 0;
-
-      // 1. 當前吸附點 -> 下一個路徑節點的距離
       if (currentIndex < allCoords.length - 1) {
           totalDist += measureDist(snappedPoint, allCoords[currentIndex + 1]);
       }
-
-      // 2. 累加後續所有節點之間的距離
       for (let i = currentIndex + 1; i < instructionEndIndex; i++) {
           totalDist += measureDist(allCoords[i], allCoords[i+1]);
       }
-
       return totalDist;
   }
 
   // ==========================================
   // 輔助功能
   // ==========================================
-  
-  // 修改：動態更新指令與精確距離
   function updateInstructionByProgress(snapResult) {
       if (!currentRoutePath || !currentRoutePath.instructions) return;
       const instructions = currentRoutePath.instructions;
@@ -746,30 +751,20 @@
       }
 
       if (activeIns) {
-          // 使用幾何運算計算剩餘距離
           const remainingMeters = getExactRemainingDistance(currentPoint, currentCoordIndex, activeIns.interval[1], fullRouteCoords);
           updateTurnInfo(activeIns, remainingMeters);
       }
   }
 
-  // 修改：動態距離格式化
   function formatDynamicDist(m) {
       if (m > 1000) return (m/1000).toFixed(1) + " 公里";
-      
-      if (m > 50) {
-          // 大於 50m，每 50m 跳一次
-          return (Math.round(m / 50) * 50) + " 公尺";
-      } else {
-          // 小於 50m，每 10m 跳一次
-          return (Math.max(0, Math.round(m / 10) * 10)) + " 公尺";
-      }
+      if (m > 50) return (Math.round(m / 50) * 50) + " 公尺";
+      return (Math.max(0, Math.round(m / 10) * 10)) + " 公尺";
   }
 
   function updateTurnInfo(ins, realDistance) {
       if (!ins) return;
       document.getElementById('turn-text').innerText = ins.text;
-      
-      // 有即時距離就用即時，否則用 API 原始值
       const distToShow = (realDistance !== null && realDistance !== undefined) ? realDistance : ins.distance;
       document.getElementById('turn-dist').innerText = formatDynamicDist(distToShow);
 
@@ -780,8 +775,6 @@
       if (ins.sign === 6) icon = 'roundabout_right';
       document.getElementById('turn-icon').innerText = icon;
       
-      // 語音播放判斷 (避免重複)
-      // 小優化：如果距離變得很短 (例如剛進入指令)，強制再播報一次
       if (document.getElementById('turn-text').innerText !== lastSpokenText) {
          speak(ins.text);
       }
