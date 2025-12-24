@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (傾斜鎖定版)</title>
+  <title>3D 智能語音導航 (修復版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -192,7 +192,7 @@
         transform: translateY(-2px);
     }
 
-    /* 隱藏原生地圖定位點 */
+    /* 隱藏原生地圖定位點 (僅在導航模式下) */
     body.nav-active .maplibregl-user-location-dot,
     body.nav-active .maplibregl-user-location-accuracy-circle {
         display: none !important;
@@ -294,8 +294,11 @@
   const graphHopperKey = '7cb4eb19-e0f4-40a3-a5e0-f2c039366f32'; 
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
 
+  // --- Global Variables ---
   let map, geolocateControl;
   let startCoords = null, endCoords = null;
+  let userLocationCoords = null; // 暫存使用者的最新位置
+  
   let startMarker = null, endMarker = null;
   let navMarker = null; 
   
@@ -303,6 +306,7 @@
   let fullRouteCoords = []; 
   let isNavigating = false;
   let navLocationHandler = null;
+  
   let activeSearchType = 'end';
   let pickMode = null; 
   let isVoiceEnabled = true;
@@ -331,7 +335,7 @@
       pitch: 0,
       bearing: 0,
       antialias: true,
-      maxPitch: 85 // 允許超大傾斜，但平時不鎖定
+      maxPitch: 85
     });
 
     map.on('load', () => {
@@ -343,24 +347,35 @@
             'horizon-fog-blend': 0.5
         });
 
+        // 初始化定位控件 (追蹤位置，但不自動切換視角)
         geolocateControl = new maplibregl.GeolocateControl({
             positionOptions: { enableHighAccuracy: true },
             trackUserLocation: true,
-            showUserHeading: true
+            showUserHeading: true,
+            showAccuracyCircle: false
         });
         map.addControl(geolocateControl);
         
-        forceUserLocation();
+        // 觸發瀏覽器定位請求
+        geolocateControl.trigger();
 
+        // ** 持續更新使用者位置變數 (重要修正) **
         geolocateControl.on('geolocate', (e) => {
-            if (isNavigating) return;
-            const userCoords = { lng: e.coords.longitude, lat: e.coords.latitude };
+            if (isNavigating) return; // 導航中由另一個 handler 處理
+            
+            const coords = { lng: e.coords.longitude, lat: e.coords.latitude };
+            userLocationCoords = coords;
+
+            // 如果目前起點輸入框是 "我的位置"，則即時更新 startCoords
             const startInput = document.getElementById('start-input');
             if (startInput.value === "我的位置") {
                 startCoords = userCoords;
+                // 注意：這裡不主動移除 startMarker，因為 "我的位置" 預設使用原生藍點
+                if (startMarker) { startMarker.remove(); startMarker = null; }
             }
         });
 
+        // ** 地圖選點監聽 (修復選點功能) **
         map.on('click', (e) => {
             if (pickMode) {
                 if (pickMode === 'start') setStartPoint(e.lngLat, "地圖已選點");
@@ -369,6 +384,7 @@
             }
         });
 
+        // 監聽使用者拖曳地圖 (用於導航模式下暫停自動視角)
         map.on('movestart', (e) => {
             if (isNavigating && e.originalEvent) {
                 isUserInteracting = true;
@@ -385,6 +401,94 @@
             }
         });
     });
+  }
+
+  // ==========================================
+  // GPS 與 選點邏輯 (修復版)
+  // ==========================================
+  
+  // 按下 "GPS定位" 按鈕
+  function forceUserLocation() {
+      if (isNavigating) return;
+      togglePickMode(null); // 取消選點模式
+      
+      // 觸發控件
+      geolocateControl.trigger();
+      
+      // 設定 UI 狀態
+      const startInput = document.getElementById('start-input');
+      startInput.value = "我的位置";
+      
+      // 如果已有位置，直接設定
+      if (userLocationCoords) {
+          startCoords = userLocationCoords;
+          if (startMarker) { startMarker.remove(); startMarker = null; }
+          map.flyTo({ center: userLocationCoords, zoom: 16 });
+          checkReadyState();
+      } else {
+          // 如果還沒有位置，等待 geolocate 事件更新
+          // (initMap 裡的 listener 會處理)
+      }
+  }
+
+  // 切換選點模式
+  function togglePickMode(mode) {
+      pickMode = (pickMode === mode) ? null : mode;
+      
+      const btnStart = document.getElementById('btn-pick-start');
+      const btnEnd = document.getElementById('btn-pick-end');
+      const canvas = map.getCanvas();
+
+      btnStart.classList.remove('active');
+      btnEnd.classList.remove('active');
+      canvas.classList.remove('crosshair-cursor'); 
+
+      if (pickMode === 'start') {
+          btnStart.classList.add('active');
+          map.getCanvas().style.cursor = 'crosshair';
+          document.getElementById('start-input').placeholder = "請點擊地圖...";
+      } else if (pickMode === 'end') {
+          btnEnd.classList.add('active');
+          map.getCanvas().style.cursor = 'crosshair';
+          document.getElementById('end-input').placeholder = "請點擊地圖...";
+      } else {
+          map.getCanvas().style.cursor = '';
+      }
+  }
+
+  function setStartPoint(lngLat, name) {
+      if (isNavigating) return;
+      startCoords = lngLat;
+      document.getElementById('start-input').value = name;
+      document.getElementById('suggestions').style.display = 'none';
+      if (startMarker) startMarker.remove();
+      startMarker = new maplibregl.Marker({ color: '#1a73e8', draggable: true }).setLngLat(lngLat).addTo(map);
+      
+      startMarker.on('dragend', () => { 
+          startCoords = startMarker.getLngLat(); 
+          isRouteCalculated = false;
+          checkReadyState();
+      });
+      map.flyTo({ center: lngLat, zoom: 16 });
+      isRouteCalculated = false;
+      checkReadyState();
+  }
+
+  function setEndPoint(lngLat, name) {
+      if (isNavigating) return;
+      endCoords = lngLat;
+      document.getElementById('end-input').value = name;
+      document.getElementById('suggestions').style.display = 'none';
+      if (endMarker) endMarker.remove();
+      endMarker = new maplibregl.Marker({ color: '#d93025', draggable: true }).setLngLat(lngLat).addTo(map);
+      
+      endMarker.on('dragend', () => { 
+          endCoords = endMarker.getLngLat(); 
+          isRouteCalculated = false; 
+          checkReadyState();
+      });
+      isRouteCalculated = false;
+      checkReadyState();
   }
 
   // ==========================================
@@ -509,9 +613,11 @@
               }
           });
       }
-      
-      // 確保藍線在最上層
-      if (map.getLayer(fgLayerId)) map.moveLayer(fgLayerId); 
+
+      // 確保藍線圖層在最上方
+      if (map.getLayer(fgLayerId)) {
+          map.moveLayer(fgLayerId); 
+      }
   }
 
   function clearRouteLayers() {
@@ -532,10 +638,10 @@
       isUserInteracting = false;
       lastNavCoords = null;
       
+      // 隱藏原生 GPS 點
       document.body.classList.add('nav-active');
 
-      // *** 關鍵修改：透過設定最小/最大 Pitch 為同一數值來「鎖定」傾斜 ***
-      // 使用者仍可雙指旋轉(Bearing)，但無法雙指上下推(Pitch)
+      // *** 鎖定傾斜：設定最小與最大 Pitch 為 80 ***
       map.setMinPitch(80);
       map.setMaxPitch(80);
 
@@ -605,7 +711,7 @@
               map.easeTo({
                   center: displayCoords,
                   zoom: 19, 
-                  pitch: 80, // 程式碼強制維持 80 度
+                  pitch: 80, 
                   bearing: targetBearing,
                   duration: 1000, easing: (t) => t
               });
@@ -616,6 +722,7 @@
           const remainingPath = fullRouteCoords.slice(snapResult.index);
           updateBlueRoute(remainingPath);
 
+          // 即時距離運算
           updateInstructionByProgress(snapResult);
       };
 
@@ -795,56 +902,6 @@
       }
   }
 
-  function forceUserLocation() {
-      if (isNavigating) return;
-      togglePickMode(null);
-      geolocateControl.trigger();
-      geolocateControl.once('geolocate', (e) => {
-          const userCoords = { lng: e.coords.longitude, lat: e.coords.latitude };
-          startCoords = userCoords;
-          document.getElementById('start-input').value = "我的位置";
-          if (startMarker) { startMarker.remove(); startMarker = null; }
-          map.flyTo({ center: userCoords, zoom: 16, pitch: 0 });
-          isRouteCalculated = false;
-          checkReadyState(); 
-      });
-  }
-
-  function setStartPoint(lngLat, name) {
-      if (isNavigating) return;
-      startCoords = lngLat;
-      document.getElementById('start-input').value = name;
-      document.getElementById('suggestions').style.display = 'none';
-      if (startMarker) startMarker.remove();
-      startMarker = new maplibregl.Marker({ color: '#1a73e8', draggable: true }).setLngLat(lngLat).addTo(map);
-      
-      startMarker.on('dragend', () => { 
-          startCoords = startMarker.getLngLat(); 
-          isRouteCalculated = false;
-          checkReadyState();
-      });
-      map.flyTo({ center: lngLat, zoom: 16, pitch: 0 });
-      isRouteCalculated = false;
-      checkReadyState();
-  }
-
-  function setEndPoint(lngLat, name) {
-      if (isNavigating) return;
-      endCoords = lngLat;
-      document.getElementById('end-input').value = name;
-      document.getElementById('suggestions').style.display = 'none';
-      if (endMarker) endMarker.remove();
-      endMarker = new maplibregl.Marker({ color: '#d93025', draggable: true }).setLngLat(lngLat).addTo(map);
-      
-      endMarker.on('dragend', () => { 
-          endCoords = endMarker.getLngLat(); 
-          isRouteCalculated = false; 
-          checkReadyState();
-      });
-      isRouteCalculated = false;
-      checkReadyState();
-  }
-
   function checkReadyState() {
       if (startCoords && endCoords) {
           navFooter.classList.add('show');
@@ -940,29 +997,6 @@
       utterance.lang = 'zh-TW';
       synth.speak(utterance);
       lastSpokenText = text;
-  }
-
-  function togglePickMode(mode) {
-      pickMode = (pickMode === mode) ? null : mode;
-      const btnStart = document.getElementById('btn-pick-start');
-      const btnEnd = document.getElementById('btn-pick-end');
-      const canvas = map.getCanvas();
-
-      btnStart.classList.remove('active');
-      btnEnd.classList.remove('active');
-      canvas.classList.remove('crosshair-cursor'); 
-
-      if (pickMode === 'start') {
-          btnStart.classList.add('active');
-          map.getCanvas().style.cursor = 'crosshair';
-          document.getElementById('start-input').placeholder = "請點擊地圖...";
-      } else if (pickMode === 'end') {
-          btnEnd.classList.add('active');
-          map.getCanvas().style.cursor = 'crosshair';
-          document.getElementById('end-input').placeholder = "請點擊地圖...";
-      } else {
-          map.getCanvas().style.cursor = '';
-      }
   }
 
   function clearEnd() {
