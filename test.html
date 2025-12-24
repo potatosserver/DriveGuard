@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (鎖定視角+穩定路線版)</title>
+  <title>3D 智能語音導航 (傾斜鎖定版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -330,10 +330,19 @@
       zoom: 15,
       pitch: 0,
       bearing: 0,
-      antialias: true
+      antialias: true,
+      maxPitch: 85 // 允許超大傾斜，但平時不鎖定
     });
 
     map.on('load', () => {
+        // 天空
+        map.setSky({
+            'sky-color': '#87cefa',
+            'sky-horizon-blend': 0.5,
+            'horizon-color': '#ffffff',
+            'horizon-fog-blend': 0.5
+        });
+
         geolocateControl = new maplibregl.GeolocateControl({
             positionOptions: { enableHighAccuracy: true },
             trackUserLocation: true,
@@ -389,7 +398,6 @@
       document.getElementById('loading-text').innerText = isNavigating ? "偏離路徑，重新規劃中..." : "路徑計算中...";
       mainBtn.disabled = true;
 
-      // 確保清除舊圖層
       clearRouteLayers();
 
       const params = new URLSearchParams();
@@ -412,7 +420,6 @@
               currentRoutePath = path;
               fullRouteCoords = path.points.coordinates;
               
-              // 繪製順序：先灰，後藍，確保藍色在上方
               drawBaseRoute(fullRouteCoords);
               updateBlueRoute(fullRouteCoords);
               
@@ -452,7 +459,7 @@
   }
 
   // ==========================================
-  // 繪圖與圖層管理 (修復版)
+  // 繪圖與圖層管理
   // ==========================================
   function drawBaseRoute(geoJsonCoords) {
       const sourceId = 'final-route-bg-source';
@@ -474,13 +481,11 @@
               'line-color': '#bdbdbd', 
               'line-width': 12, 
               'line-opacity': 0.8
-              // 移除 line-pitch-alignment: 'map' 以確保可見性
           }
       });
   }
 
   function updateBlueRoute(remainingCoords) {
-      // 安全性檢查：如果座標為空或無效，不處理
       if (!remainingCoords || remainingCoords.length < 2) return;
 
       const fgSourceId = 'active-route-source';
@@ -501,15 +506,12 @@
                   'line-color': '#4285F4', 
                   'line-width': 12, 
                   'line-opacity': 1.0
-                  // 移除 line-pitch-alignment: 'map'
               }
           });
       }
-
-      // 關鍵修復：強制將藍色圖層移到最上方
-      if (map.getLayer(fgLayerId)) {
-          map.moveLayer(fgLayerId); 
-      }
+      
+      // 確保藍線在最上層
+      if (map.getLayer(fgLayerId)) map.moveLayer(fgLayerId); 
   }
 
   function clearRouteLayers() {
@@ -520,7 +522,7 @@
   }
 
   // ==========================================
-  // 導航模式 (核心邏輯)
+  // 導航模式 (核心邏輯：鎖定傾斜，保留旋轉)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -532,10 +534,10 @@
       
       document.body.classList.add('nav-active');
 
-      // --- 鎖定使用者手動視角 ---
-      map.dragRotate.disable();
-      map.touchZoomRotate.disableRotation();
-      // 保持 dragPan (平移) 可用，方便查看周圍
+      // *** 關鍵修改：透過設定最小/最大 Pitch 為同一數值來「鎖定」傾斜 ***
+      // 使用者仍可雙指旋轉(Bearing)，但無法雙指上下推(Pitch)
+      map.setMinPitch(80);
+      map.setMaxPitch(80);
 
       document.getElementById('search-panel').style.top = '-400px'; 
       navFooter.classList.remove('show');
@@ -602,7 +604,8 @@
           if (!isUserInteracting) {
               map.easeTo({
                   center: displayCoords,
-                  zoom: 19, pitch: 60, 
+                  zoom: 19, 
+                  pitch: 80, // 程式碼強制維持 80 度
                   bearing: targetBearing,
                   duration: 1000, easing: (t) => t
               });
@@ -611,9 +614,8 @@
           if (shouldUpdateBearing) lastNavCoords = [rawLng, rawLat];
 
           const remainingPath = fullRouteCoords.slice(snapResult.index);
-          updateBlueRoute(remainingPath); // 現在這個函數內有安全檢查
+          updateBlueRoute(remainingPath);
 
-          // 即時距離運算
           updateInstructionByProgress(snapResult);
       };
 
@@ -632,7 +634,6 @@
           });
       }
 
-      // 再次確保藍色路線完整顯示
       updateBlueRoute(fullRouteCoords);
       speak("開始導航");
   }
@@ -642,9 +643,9 @@
       isUserInteracting = false;
       document.body.classList.remove('nav-active');
 
-      // --- 解鎖視角 ---
-      map.dragRotate.enable();
-      map.touchZoomRotate.enableRotation();
+      // *** 解鎖傾斜 ***
+      map.setMinPitch(0);
+      map.setMaxPitch(85);
 
       if(snapBackTimer) clearTimeout(snapBackTimer);
       synth.cancel();
