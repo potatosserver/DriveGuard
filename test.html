@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (修復版)</title>
+  <title>3D 智能語音導航 (全功能修復版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -18,7 +18,8 @@
     body { margin: 0; padding: 0; font-family: 'Roboto', sans-serif; overflow: hidden; background: #eee; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; z-index: 1; }
     
-    .crosshair-cursor .maplibregl-canvas { cursor: crosshair !important; }
+    /* 強制滑鼠樣式 */
+    .cursor-crosshair .maplibregl-canvas-container { cursor: crosshair !important; }
 
     /* --- 搜尋面板 --- */
     #search-panel {
@@ -48,6 +49,7 @@
     .icon-btn { 
         padding: 10px; border-radius: 50%; cursor: pointer; color: #5f6368; 
         transition: all 0.2s; display: flex; align-items: center; justify-content: center;
+        width: 40px; height: 40px; /* 固定大小以防變形 */
     }
     .icon-btn:hover { background: rgba(0,0,0,0.05); color: #202124; }
     .icon-btn.active { color: #1a73e8; background: #e8f0fe; }
@@ -294,10 +296,10 @@
   const graphHopperKey = '7cb4eb19-e0f4-40a3-a5e0-f2c039366f32'; 
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
 
-  // --- Global Variables ---
+  // --- 全域變數定義 ---
   let map, geolocateControl;
   let startCoords = null, endCoords = null;
-  let userLocationCoords = null; // 暫存使用者的最新位置
+  let userLocationCoords = null; 
   
   let startMarker = null, endMarker = null;
   let navMarker = null; 
@@ -326,6 +328,7 @@
   let snapBackTimer = null;
   let lastNavCoords = null; 
 
+  // --- 初始化地圖 ---
   function initMap() {
     map = new maplibregl.Map({
       container: 'map',
@@ -335,11 +338,11 @@
       pitch: 0,
       bearing: 0,
       antialias: true,
-      maxPitch: 85
+      maxPitch: 85 // 允許超大傾斜
     });
 
     map.on('load', () => {
-        // 天空
+        // 1. 設定天空
         map.setSky({
             'sky-color': '#87cefa',
             'sky-horizon-blend': 0.5,
@@ -347,7 +350,7 @@
             'horizon-fog-blend': 0.5
         });
 
-        // 初始化定位控件 (追蹤位置，但不自動切換視角)
+        // 2. 初始化定位控件
         geolocateControl = new maplibregl.GeolocateControl({
             positionOptions: { enableHighAccuracy: true },
             trackUserLocation: true,
@@ -356,35 +359,34 @@
         });
         map.addControl(geolocateControl);
         
-        // 觸發瀏覽器定位請求
+        // 嘗試自動定位一次 (靜默)
         geolocateControl.trigger();
 
-        // ** 持續更新使用者位置變數 (重要修正) **
+        // 3. 監聽定位更新
         geolocateControl.on('geolocate', (e) => {
-            if (isNavigating) return; // 導航中由另一個 handler 處理
-            
+            if (isNavigating) return;
             const coords = { lng: e.coords.longitude, lat: e.coords.latitude };
             userLocationCoords = coords;
 
-            // 如果目前起點輸入框是 "我的位置"，則即時更新 startCoords
+            // 如果輸入框是 "我的位置"，即時同步起點變數 (但不移動地圖)
             const startInput = document.getElementById('start-input');
             if (startInput.value === "我的位置") {
-                startCoords = userCoords;
-                // 注意：這裡不主動移除 startMarker，因為 "我的位置" 預設使用原生藍點
-                if (startMarker) { startMarker.remove(); startMarker = null; }
+                startCoords = userLocationCoords;
             }
         });
 
-        // ** 地圖選點監聽 (修復選點功能) **
+        // 4. 地圖點擊事件 (處理選點)
         map.on('click', (e) => {
-            if (pickMode) {
-                if (pickMode === 'start') setStartPoint(e.lngLat, "地圖已選點");
-                else if (pickMode === 'end') setEndPoint(e.lngLat, "地圖已選點");
+            if (pickMode === 'start') {
+                setStartPoint(e.lngLat, "地圖已選點");
+                togglePickMode(null);
+            } else if (pickMode === 'end') {
+                setEndPoint(e.lngLat, "地圖已選點");
                 togglePickMode(null);
             }
         });
 
-        // 監聽使用者拖曳地圖 (用於導航模式下暫停自動視角)
+        // 5. 監聽使用者交互 (導航時用)
         map.on('movestart', (e) => {
             if (isNavigating && e.originalEvent) {
                 isUserInteracting = true;
@@ -404,55 +406,62 @@
   }
 
   // ==========================================
-  // GPS 與 選點邏輯 (修復版)
+  // 定位與選點邏輯
   // ==========================================
   
-  // 按下 "GPS定位" 按鈕
   function forceUserLocation() {
       if (isNavigating) return;
-      togglePickMode(null); // 取消選點模式
+      togglePickMode(null);
       
-      // 觸發控件
-      geolocateControl.trigger();
-      
-      // 設定 UI 狀態
       const startInput = document.getElementById('start-input');
       startInput.value = "我的位置";
-      
-      // 如果已有位置，直接設定
+
+      // 如果還沒有定位控件 (地圖未載入完)，直接返回
+      if (!geolocateControl) {
+          alert("地圖載入中，請稍候...");
+          return;
+      }
+
+      // 如果已經有位置了，直接飛過去
       if (userLocationCoords) {
           startCoords = userLocationCoords;
-          if (startMarker) { startMarker.remove(); startMarker = null; }
-          map.flyTo({ center: userLocationCoords, zoom: 16 });
+          if (startMarker) { startMarker.remove(); startMarker = null; } // 移除舊標記
+          map.flyTo({ center: userLocationCoords, zoom: 16, pitch: 0 });
           checkReadyState();
       } else {
-          // 如果還沒有位置，等待 geolocate 事件更新
-          // (initMap 裡的 listener 會處理)
+          // 還沒有位置，強制觸發並等待
+          startInput.value = "定位中...";
+          geolocateControl.trigger();
+          geolocateControl.once('geolocate', (e) => {
+              startInput.value = "我的位置";
+              const coords = { lng: e.coords.longitude, lat: e.coords.latitude };
+              startCoords = coords;
+              if (startMarker) { startMarker.remove(); startMarker = null; }
+              map.flyTo({ center: coords, zoom: 16, pitch: 0 });
+              checkReadyState();
+          });
       }
   }
 
-  // 切換選點模式
   function togglePickMode(mode) {
       pickMode = (pickMode === mode) ? null : mode;
       
       const btnStart = document.getElementById('btn-pick-start');
       const btnEnd = document.getElementById('btn-pick-end');
-      const canvas = map.getCanvas();
+      const canvas = document.getElementById('map'); // 直接抓容器加樣式
 
       btnStart.classList.remove('active');
       btnEnd.classList.remove('active');
-      canvas.classList.remove('crosshair-cursor'); 
+      document.body.classList.remove('cursor-crosshair');
 
       if (pickMode === 'start') {
           btnStart.classList.add('active');
-          map.getCanvas().style.cursor = 'crosshair';
+          document.body.classList.add('cursor-crosshair');
           document.getElementById('start-input').placeholder = "請點擊地圖...";
       } else if (pickMode === 'end') {
           btnEnd.classList.add('active');
-          map.getCanvas().style.cursor = 'crosshair';
+          document.body.classList.add('cursor-crosshair');
           document.getElementById('end-input').placeholder = "請點擊地圖...";
-      } else {
-          map.getCanvas().style.cursor = '';
       }
   }
 
@@ -461,6 +470,7 @@
       startCoords = lngLat;
       document.getElementById('start-input').value = name;
       document.getElementById('suggestions').style.display = 'none';
+      
       if (startMarker) startMarker.remove();
       startMarker = new maplibregl.Marker({ color: '#1a73e8', draggable: true }).setLngLat(lngLat).addTo(map);
       
@@ -479,6 +489,7 @@
       endCoords = lngLat;
       document.getElementById('end-input').value = name;
       document.getElementById('suggestions').style.display = 'none';
+      
       if (endMarker) endMarker.remove();
       endMarker = new maplibregl.Marker({ color: '#d93025', draggable: true }).setLngLat(lngLat).addTo(map);
       
@@ -581,11 +592,7 @@
       map.addLayer({
           id: layerId, type: 'line', source: sourceId,
           layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 
-              'line-color': '#bdbdbd', 
-              'line-width': 12, 
-              'line-opacity': 0.8
-          }
+          paint: { 'line-color': '#bdbdbd', 'line-width': 12, 'line-opacity': 0.8 }
       });
   }
 
@@ -606,18 +613,11 @@
           map.addLayer({
               id: fgLayerId, type: 'line', source: fgSourceId,
               layout: { 'line-join': 'round', 'line-cap': 'round' },
-              paint: { 
-                  'line-color': '#4285F4', 
-                  'line-width': 12, 
-                  'line-opacity': 1.0
-              }
+              paint: { 'line-color': '#4285F4', 'line-width': 12, 'line-opacity': 1.0 }
           });
       }
 
-      // 確保藍線圖層在最上方
-      if (map.getLayer(fgLayerId)) {
-          map.moveLayer(fgLayerId); 
-      }
+      if (map.getLayer(fgLayerId)) map.moveLayer(fgLayerId); 
   }
 
   function clearRouteLayers() {
@@ -628,7 +628,7 @@
   }
 
   // ==========================================
-  // 導航模式 (核心邏輯：鎖定傾斜，保留旋轉)
+  // 導航模式 (核心邏輯：鎖定傾斜80度)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -638,10 +638,9 @@
       isUserInteracting = false;
       lastNavCoords = null;
       
-      // 隱藏原生 GPS 點
       document.body.classList.add('nav-active');
 
-      // *** 鎖定傾斜：設定最小與最大 Pitch 為 80 ***
+      // *** 鎖定傾斜：設定最小與最大 Pitch 為 80 (允許旋轉) ***
       map.setMinPitch(80);
       map.setMaxPitch(80);
 
@@ -668,7 +667,7 @@
           const rawLng = e.coords.longitude;
           const rawHeading = e.coords.heading;
 
-          // 計算吸附
+          // 吸附
           const snapResult = getNearestPointOnLine([rawLng, rawLat], fullRouteCoords);
           const deviationDist = snapResult.distance * 1000; 
 
@@ -695,7 +694,6 @@
               const mLat = dLat * 111000;
               const mLng = dLng * 111000 * Math.cos(rawLat * Math.PI / 180);
               currentDist = Math.sqrt(mLat*mLat + mLng*mLng);
-              
               if (currentDist > 3) shouldUpdateBearing = true;
           } else {
               shouldUpdateBearing = true;
@@ -711,7 +709,7 @@
               map.easeTo({
                   center: displayCoords,
                   zoom: 19, 
-                  pitch: 80, 
+                  pitch: 80, // 強制維持80
                   bearing: targetBearing,
                   duration: 1000, easing: (t) => t
               });
@@ -722,7 +720,6 @@
           const remainingPath = fullRouteCoords.slice(snapResult.index);
           updateBlueRoute(remainingPath);
 
-          // 即時距離運算
           updateInstructionByProgress(snapResult);
       };
 
