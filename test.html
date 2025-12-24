@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (完美修復版)</title>
+  <title>3D 智能語音導航 (導航點完全鎖定版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -175,6 +175,12 @@
     .loading-text { font-weight: 500; color: #555; }
 
     /* --- 導航專用大標記 --- */
+    /* 
+       修正說明：
+       這裡移除了 transition: transform 屬性。
+       移除後，當使用者手動拖曳地圖時，DOM 元素會即時隨地圖 canvas 更新，
+       不會產生「滑動」或「跟不上」的漂移感。
+    */
     .nav-marker {
         width: 32px; height: 32px;
         background: #4285F4;
@@ -182,7 +188,7 @@
         border-radius: 50%;
         box-shadow: 0 0 0 10px rgba(66, 133, 244, 0.3);
         display: flex; align-items: center; justify-content: center;
-        transition: transform 0.3s;
+        /* transition: transform 0.3s;  <-- 已移除這行 */
     }
     .nav-arrow {
         width: 0; height: 0;
@@ -192,7 +198,7 @@
         transform: translateY(-2px);
     }
 
-    /* 隱藏原生地圖定位點，避免視覺干擾 */
+    /* 隱藏原生地圖定位點 */
     body.nav-active .maplibregl-user-location-dot,
     body.nav-active .maplibregl-user-location-accuracy-circle {
         display: none !important;
@@ -334,21 +340,17 @@
     });
 
     map.on('load', () => {
-        // [重要修正 1] trackUserLocation 設為 false
-        // 這樣地圖原生控制項只負責取得座標，不會強制拉動鏡頭，避免與導航邏輯打架
         geolocateControl = new maplibregl.GeolocateControl({
             positionOptions: { enableHighAccuracy: true },
-            trackUserLocation: false, 
+            trackUserLocation: false, // 確保不與導航邏輯打架
             showUserHeading: true
         });
         map.addControl(geolocateControl);
         
-        // 初始定位
         forceUserLocation();
 
         geolocateControl.on('geolocate', (e) => {
             if (isNavigating) return;
-            // 非導航模式下，更新起點變數
             const userCoords = { lng: e.coords.longitude, lat: e.coords.latitude };
             const startInput = document.getElementById('start-input');
             if (startInput.value === "我的位置" || startInput.value === "") {
@@ -375,7 +377,6 @@
         map.on('moveend', (e) => {
             if (isNavigating && isUserInteracting) {
                 if (snapBackTimer) clearTimeout(snapBackTimer);
-                // 手動操作結束 5 秒後，才允許導航再次接管鏡頭
                 snapBackTimer = setTimeout(() => {
                     isUserInteracting = false;
                 }, 5000);
@@ -395,7 +396,6 @@
       document.getElementById('loading-text').innerText = isNavigating ? "偏離路徑，重新規劃中..." : "路徑計算中...";
       mainBtn.disabled = true;
 
-      // 清除舊路徑圖層
       clearRouteLayers();
 
       const params = new URLSearchParams();
@@ -416,11 +416,10 @@
           if (data.paths && data.paths.length > 0) {
               const path = data.paths[0];
               currentRoutePath = path;
-              fullRouteCoords = path.points.coordinates; // 這裡取得 GeoJSON 座標
+              fullRouteCoords = path.points.coordinates;
               
-              // [重要修正 2] 確保圖層繪製順序與立即顯示
               drawBaseRoute(fullRouteCoords);
-              updateBlueRoute(fullRouteCoords); // 初始時藍線等於完整路徑
+              updateBlueRoute(fullRouteCoords);
               
               const mins = Math.round(path.time/60000);
               const distKm = (path.distance/1000).toFixed(1);
@@ -443,7 +442,6 @@
                   fullRouteCoords.forEach(c => bounds.extend(c));
                   map.fitBounds(bounds, { padding: 80 });
               } else {
-                  // 若正在導航中重算，初始化第一個指令
                   if (currentRoutePath.instructions) {
                      updateTurnInfo(currentRoutePath.instructions[0], currentRoutePath.instructions[0].distance);
                   }
@@ -461,13 +459,12 @@
   }
 
   // ==========================================
-  // 繪圖與圖層管理 (修復路徑無法顯示問題)
+  // 繪圖與圖層管理
   // ==========================================
   function drawBaseRoute(geoJsonCoords) {
       const sourceId = 'final-route-bg-source';
       const layerId = 'final-route-bg-layer';
 
-      // 安全移除舊圖層
       if (map.getLayer(layerId)) map.removeLayer(layerId);
       if (map.getSource(sourceId)) map.removeSource(sourceId);
 
@@ -492,14 +489,12 @@
       const fgLayerId = 'active-route-fg';
       const data = { type: 'Feature', geometry: { type: 'LineString', coordinates: remainingCoords } };
 
-      // 如果來源已存在，用 setData 更新 (效能較好且不閃爍)
       if (map.getSource(fgSourceId)) {
           map.getSource(fgSourceId).setData(data);
       } else {
           map.addSource(fgSourceId, { type: 'geojson', data: data });
       }
 
-      // 如果圖層不存在才新增
       if (!map.getLayer(fgLayerId)) {
           map.addLayer({
               id: fgLayerId, type: 'line', source: fgSourceId,
@@ -521,7 +516,7 @@
   }
 
   // ==========================================
-  // 導航模式 (核心修復邏輯)
+  // 導航模式 (核心邏輯)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -543,9 +538,15 @@
           const el = document.createElement('div');
           el.className = 'nav-marker';
           el.innerHTML = '<div class="nav-arrow"></div>'; 
-          navMarker = new maplibregl.Marker({ element: el, rotationAlignment: 'map' })
-              .setLngLat(startCoords)
-              .addTo(map);
+          
+          // 修正：加入 pitchAlignment: 'map'，確保在 3D 視角下貼合地面
+          navMarker = new maplibregl.Marker({ 
+              element: el, 
+              rotationAlignment: 'map',
+              pitchAlignment: 'map' 
+          })
+          .setLngLat(startCoords)
+          .addTo(map);
       } else {
           navMarker.addTo(map);
       }
@@ -559,8 +560,6 @@
           // 計算吸附
           const snapResult = getNearestPointOnLine([rawLng, rawLat], fullRouteCoords);
           const deviationDist = snapResult.distance * 1000; 
-
-          // 重新規劃閥值 (50公尺)
           const RECALC_THRESHOLD = 50; 
 
           if (deviationDist > RECALC_THRESHOLD && !isRecalculating) {
@@ -580,12 +579,11 @@
           if (lastNavCoords) {
               const dLat = rawLat - lastNavCoords[1];
               const dLng = rawLng - lastNavCoords[0];
-              // 簡易距離估算
               const mLat = dLat * 111000;
               const mLng = dLng * 111000 * Math.cos(rawLat * Math.PI / 180);
               currentDist = Math.sqrt(mLat*mLat + mLng*mLng);
               
-              if (currentDist > 2) shouldUpdateBearing = true; // 移動大於2米才轉向
+              if (currentDist > 2) shouldUpdateBearing = true;
           } else {
               shouldUpdateBearing = true;
           }
@@ -596,38 +594,31 @@
               targetBearing = rawHeading;
           }
 
-          // [重要修正 3] 防止畫面與使用者操作打架
-          // 只有當「使用者沒在滑地圖」時，程式才控制鏡頭
           if (!isUserInteracting) {
               map.easeTo({
                   center: displayCoords,
                   zoom: 19, 
                   pitch: 60, 
                   bearing: targetBearing,
-                  duration: 1000, // 平滑移動
+                  duration: 1000, 
                   easing: (t) => t
               });
           }
 
           if (shouldUpdateBearing) lastNavCoords = [rawLng, rawLat];
 
-          // 更新藍色剩餘路徑
           const remainingPath = fullRouteCoords.slice(snapResult.index);
           if (remainingPath.length > 1) {
               updateBlueRoute(remainingPath);
           }
 
-          // 計算並更新指令
           updateInstructionByProgress(snapResult);
       };
 
       navLocationHandler = handleNavUpdate;
       geolocateControl.on('geolocate', navLocationHandler);
-      
-      // 手動觸發一次以開始監聽
       geolocateControl.trigger();
 
-      // 導航開始瞬間，強制把鏡頭帶過去 (因為 trackUserLocation 關了)
       if (startCoords) {
           map.easeTo({ center: startCoords, zoom: 19, pitch: 60, duration: 1500 });
       }
@@ -658,14 +649,13 @@
       
       map.easeTo({ pitch: 0, zoom: 16, bearing: 0 });
       
-      // 退出時恢復完整藍線
       if (fullRouteCoords.length > 0) {
           updateBlueRoute(fullRouteCoords);
       }
   }
 
   // ==========================================
-  // 數學與距離計算工具
+  // 數學工具 
   // ==========================================
   function getNearestPointOnLine(pt, lineCoords) {
       let minDist = Infinity;
@@ -718,11 +708,9 @@
 
   function getExactRemainingDistance(snappedPoint, currentIndex, instructionEndIndex, allCoords) {
       let totalDist = 0;
-      // 1. 吸附點到下一個節點
       if (currentIndex < allCoords.length - 1) {
           totalDist += measureDist(snappedPoint, allCoords[currentIndex + 1]);
       }
-      // 2. 剩餘節點累加
       for (let i = currentIndex + 1; i < instructionEndIndex; i++) {
           if (i < allCoords.length - 1) {
              totalDist += measureDist(allCoords[i], allCoords[i+1]);
@@ -734,7 +722,6 @@
   // ==========================================
   // 輔助功能
   // ==========================================
-  
   function updateInstructionByProgress(snapResult) {
       if (!currentRoutePath || !currentRoutePath.instructions) return;
       const instructions = currentRoutePath.instructions;
@@ -776,7 +763,6 @@
       if (ins.sign === 6) icon = 'roundabout_right';
       document.getElementById('turn-icon').innerText = icon;
       
-      // 文字變更時才語音播報
       if (document.getElementById('turn-text').innerText !== lastSpokenText) {
          speak(ins.text);
       }
