@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (極速響應版)</title>
+  <title>3D 智能語音導航 (強力吸附版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -192,10 +192,7 @@
         transform: translateY(-2px);
     }
 
-    /* 
-       隱藏原生地圖定位點 
-       當 body 有 nav-active 時，隱藏 maplibregl-user-location-dot
-    */
+    /* 隱藏原生地圖定位點 */
     body.nav-active .maplibregl-user-location-dot,
     body.nav-active .maplibregl-user-location-accuracy-circle {
         display: none !important;
@@ -325,7 +322,7 @@
   // 優化導航控制變數
   let isUserInteracting = false; 
   let snapBackTimer = null;
-  let lastNavCoords = null; // 上一次導航更新的真實座標
+  let lastNavCoords = null; 
 
   function initMap() {
     map = new maplibregl.Map({
@@ -348,7 +345,7 @@
         
         forceUserLocation();
 
-        // 持續更新起點 (非導航模式)
+        // 非導航模式下更新起點
         geolocateControl.on('geolocate', (e) => {
             if (isNavigating) return;
             const userCoords = { lng: e.coords.longitude, lat: e.coords.latitude };
@@ -366,7 +363,6 @@
             }
         });
 
-        // 監聽使用者交互
         map.on('movestart', (e) => {
             if (isNavigating && e.originalEvent) {
                 isUserInteracting = true;
@@ -396,7 +392,6 @@
       document.getElementById('loading-text').innerText = isNavigating ? "偏離路徑，重新規劃中..." : "路徑計算中...";
       mainBtn.disabled = true;
 
-      // 清除舊圖層，防止殘留
       clearRouteLayers();
 
       const params = new URLSearchParams();
@@ -419,9 +414,7 @@
               currentRoutePath = path;
               fullRouteCoords = path.points.coordinates;
               
-              // 1. 繪製「底層灰色」
               drawBaseRoute(fullRouteCoords);
-              // 2. 繪製「上層藍色」 (全段)
               updateBlueRoute(fullRouteCoords);
               
               const mins = Math.round(path.time/60000);
@@ -481,22 +474,17 @@
       });
   }
 
-  // 優化版的藍色路線更新：確保圖層始終存在
   function updateBlueRoute(remainingCoords) {
       const fgSourceId = 'active-route-source';
       const fgLayerId = 'active-route-fg';
-
       const data = { type: 'Feature', geometry: { type: 'LineString', coordinates: remainingCoords } };
 
-      // 如果沒有 source，直接建立
       if (!map.getSource(fgSourceId)) {
           map.addSource(fgSourceId, { type: 'geojson', data: data });
       } else {
-          // 如果有 source，更新數據
           map.getSource(fgSourceId).setData(data);
       }
 
-      // 如果沒有 layer，建立 layer (防止 source 存在但 layer 被移除的情況)
       if (!map.getLayer(fgLayerId)) {
           map.addLayer({
               id: fgLayerId, type: 'line', source: fgSourceId,
@@ -509,7 +497,6 @@
   function clearRouteLayers() {
       if (map.getLayer('active-route-fg')) map.removeLayer('active-route-fg');
       if (map.getSource('active-route-source')) map.removeSource('active-route-source');
-      
       if (map.getLayer('final-route-bg-layer')) map.removeLayer('final-route-bg-layer');
       if (map.getSource('final-route-bg-source')) map.removeSource('final-route-bg-source');
   }
@@ -525,17 +512,14 @@
       isUserInteracting = false;
       lastNavCoords = null;
       
-      // 1. 隱藏原生地圖定位點 (透過 CSS)
       document.body.classList.add('nav-active');
 
-      // 2. 切換 UI
       document.getElementById('search-panel').style.top = '-400px'; 
       navFooter.classList.remove('show');
       document.getElementById('turn-instruction').style.display = 'block';
       document.getElementById('btn-exit-nav').style.display = 'flex';
       closeStepsPanel();
 
-      // 3. 建立自訂導航箭頭
       if (!navMarker) {
           const el = document.createElement('div');
           el.className = 'nav-marker';
@@ -547,20 +531,22 @@
           navMarker.addTo(map);
       }
 
-      // 4. 定義導航更新函數 (抽離出來以便手動呼叫)
       const handleNavUpdate = (e) => {
           if (!isNavigating) return;
           const rawLat = e.coords.latitude;
           const rawLng = e.coords.longitude;
           const rawHeading = e.coords.heading;
 
-          // 吸附計算
+          // 計算吸附 (使用優化後的演算法)
           const snapResult = getNearestPointOnLine([rawLng, rawLat], fullRouteCoords);
-          const deviationDist = snapResult.distance * 1000; 
+          const deviationDist = snapResult.distance * 1000; // 公尺
 
-          // 偏離重算
-          if (deviationDist > 40 && !isRecalculating) {
-              console.log("偏離路徑，重新規劃...");
+          // *** 閥值設定 ***
+          const RECALC_THRESHOLD = 50; // 50公尺
+
+          // 1. 偏離過大 -> 觸發重算
+          if (deviationDist > RECALC_THRESHOLD && !isRecalculating) {
+              console.log("偏離路徑 > 50m，重新規劃...");
               speak("偏離路徑，重新規劃中");
               isRecalculating = true;
               startCoords = { lat: rawLat, lng: rawLng };
@@ -568,11 +554,11 @@
               return;
           }
 
-          // 顯示位置更新
-          const displayCoords = (deviationDist < 20) ? snapResult.point : [rawLng, rawLat];
+          // 2. 顯示位置：只要沒觸發重算，一律強制吸附
+          const displayCoords = snapResult.point; 
           navMarker.setLngLat(displayCoords);
           
-          // 地圖轉動邏輯 (防抖動)
+          // 地圖轉動邏輯 (Hysteresis: 3公尺)
           let shouldUpdateBearing = false;
           let currentDist = 0;
           
@@ -594,7 +580,6 @@
               targetBearing = rawHeading;
           }
 
-          // 相機跟隨
           if (!isUserInteracting) {
               map.easeTo({
                   center: displayCoords,
@@ -606,23 +591,19 @@
 
           if (shouldUpdateBearing) lastNavCoords = [rawLng, rawLat];
 
-          // 藍色路徑裁切
           const remainingPath = fullRouteCoords.slice(snapResult.index);
           if (remainingPath.length > 1) {
               updateBlueRoute(remainingPath);
           }
 
-          // 指令更新
           updateInstructionByProgress(snapResult.index);
       };
 
-      // 5. 綁定監聽器
       navLocationHandler = handleNavUpdate;
       geolocateControl.on('geolocate', navLocationHandler);
       geolocateControl.trigger();
 
-      // 6. ***關鍵優化***: 立即執行一次更新，不等待 GPS 回調
-      // 使用最近一次的 startCoords 當作目前位置來初始化視角
+      // 立即執行一次，消除延遲感
       if (startCoords) {
           const initialBearing = map.getBearing();
           handleNavUpdate({
@@ -634,7 +615,6 @@
           });
       }
 
-      // 7. 確保藍色路徑顯示 (再刷一次)
       updateBlueRoute(fullRouteCoords);
       speak("開始導航");
   }
@@ -642,7 +622,7 @@
   function exitNavigationMode() {
       isNavigating = false;
       isUserInteracting = false;
-      document.body.classList.remove('nav-active'); // 恢復原生定位點
+      document.body.classList.remove('nav-active');
 
       if(snapBackTimer) clearTimeout(snapBackTimer);
       synth.cancel();
@@ -662,31 +642,41 @@
       
       map.easeTo({ pitch: 0, zoom: 16, bearing: 0 });
       
-      // 退出時，恢復顯示全長的藍色路徑
       if (fullRouteCoords.length > 0) {
           updateBlueRoute(fullRouteCoords);
       }
   }
 
   // ==========================================
-  // 數學工具
+  // 數學工具 (修正版：加入經度校正)
   // ==========================================
   function getNearestPointOnLine(pt, lineCoords) {
       let minDist = Infinity;
       let nearestPoint = pt;
       let nearestIndex = 0;
 
+      // 取得當前緯度的修正係數
+      const cosLat = Math.cos(pt[1] * Math.PI / 180);
+
       for (let i = 0; i < lineCoords.length - 1; i++) {
           const start = lineCoords[i];
           const end = lineCoords[i+1];
-          const result = pDistance(pt[0], pt[1], start[0], start[1], end[0], end[1]);
+          
+          // 將經度差乘上修正係數
+          const result = pDistance(
+              pt[0] * cosLat, pt[1], 
+              start[0] * cosLat, start[1], 
+              end[0] * cosLat, end[1]
+          );
           
           if (result.dist < minDist) {
               minDist = result.dist;
-              nearestPoint = [result.x, result.y];
+              // 還原回經緯度
+              nearestPoint = [result.x / cosLat, result.y];
               nearestIndex = i;
           }
       }
+      
       const distInKm = minDist * 111; 
       return { point: nearestPoint, index: nearestIndex, distance: distInKm };
   }
