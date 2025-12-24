@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (全功能修復版)</title>
+  <title>3D 智能語音導航 (即時距離運算版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -18,8 +18,7 @@
     body { margin: 0; padding: 0; font-family: 'Roboto', sans-serif; overflow: hidden; background: #eee; }
     #map { position: absolute; top: 0; bottom: 0; width: 100%; z-index: 1; }
     
-    /* 強制滑鼠樣式 */
-    .cursor-crosshair .maplibregl-canvas-container { cursor: crosshair !important; }
+    .crosshair-cursor .maplibregl-canvas { cursor: crosshair !important; }
 
     /* --- 搜尋面板 --- */
     #search-panel {
@@ -49,7 +48,6 @@
     .icon-btn { 
         padding: 10px; border-radius: 50%; cursor: pointer; color: #5f6368; 
         transition: all 0.2s; display: flex; align-items: center; justify-content: center;
-        width: 40px; height: 40px; /* 固定大小以防變形 */
     }
     .icon-btn:hover { background: rgba(0,0,0,0.05); color: #202124; }
     .icon-btn.active { color: #1a73e8; background: #e8f0fe; }
@@ -194,7 +192,7 @@
         transform: translateY(-2px);
     }
 
-    /* 隱藏原生地圖定位點 (僅在導航模式下) */
+    /* 隱藏原生地圖定位點 */
     body.nav-active .maplibregl-user-location-dot,
     body.nav-active .maplibregl-user-location-accuracy-circle {
         display: none !important;
@@ -296,11 +294,8 @@
   const graphHopperKey = '7cb4eb19-e0f4-40a3-a5e0-f2c039366f32'; 
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
 
-  // --- 全域變數定義 ---
   let map, geolocateControl;
   let startCoords = null, endCoords = null;
-  let userLocationCoords = null; 
-  
   let startMarker = null, endMarker = null;
   let navMarker = null; 
   
@@ -308,7 +303,6 @@
   let fullRouteCoords = []; 
   let isNavigating = false;
   let navLocationHandler = null;
-  
   let activeSearchType = 'end';
   let pickMode = null; 
   let isVoiceEnabled = true;
@@ -328,7 +322,6 @@
   let snapBackTimer = null;
   let lastNavCoords = null; 
 
-  // --- 初始化地圖 ---
   function initMap() {
     map = new maplibregl.Map({
       container: 'map',
@@ -337,56 +330,36 @@
       zoom: 15,
       pitch: 0,
       bearing: 0,
-      antialias: true,
-      maxPitch: 85 // 允許超大傾斜
+      antialias: true
     });
 
     map.on('load', () => {
-        // 1. 設定天空
-        map.setSky({
-            'sky-color': '#87cefa',
-            'sky-horizon-blend': 0.5,
-            'horizon-color': '#ffffff',
-            'horizon-fog-blend': 0.5
-        });
-
-        // 2. 初始化定位控件
         geolocateControl = new maplibregl.GeolocateControl({
             positionOptions: { enableHighAccuracy: true },
             trackUserLocation: true,
-            showUserHeading: true,
-            showAccuracyCircle: false
+            showUserHeading: true
         });
         map.addControl(geolocateControl);
         
-        // 嘗試自動定位一次 (靜默)
-        geolocateControl.trigger();
+        forceUserLocation();
 
-        // 3. 監聽定位更新
         geolocateControl.on('geolocate', (e) => {
             if (isNavigating) return;
-            const coords = { lng: e.coords.longitude, lat: e.coords.latitude };
-            userLocationCoords = coords;
-
-            // 如果輸入框是 "我的位置"，即時同步起點變數 (但不移動地圖)
+            const userCoords = { lng: e.coords.longitude, lat: e.coords.latitude };
             const startInput = document.getElementById('start-input');
             if (startInput.value === "我的位置") {
-                startCoords = userLocationCoords;
+                startCoords = userCoords;
             }
         });
 
-        // 4. 地圖點擊事件 (處理選點)
         map.on('click', (e) => {
-            if (pickMode === 'start') {
-                setStartPoint(e.lngLat, "地圖已選點");
-                togglePickMode(null);
-            } else if (pickMode === 'end') {
-                setEndPoint(e.lngLat, "地圖已選點");
+            if (pickMode) {
+                if (pickMode === 'start') setStartPoint(e.lngLat, "地圖已選點");
+                else if (pickMode === 'end') setEndPoint(e.lngLat, "地圖已選點");
                 togglePickMode(null);
             }
         });
 
-        // 5. 監聽使用者交互 (導航時用)
         map.on('movestart', (e) => {
             if (isNavigating && e.originalEvent) {
                 isUserInteracting = true;
@@ -403,103 +376,6 @@
             }
         });
     });
-  }
-
-  // ==========================================
-  // 定位與選點邏輯
-  // ==========================================
-  
-  function forceUserLocation() {
-      if (isNavigating) return;
-      togglePickMode(null);
-      
-      const startInput = document.getElementById('start-input');
-      startInput.value = "我的位置";
-
-      // 如果還沒有定位控件 (地圖未載入完)，直接返回
-      if (!geolocateControl) {
-          alert("地圖載入中，請稍候...");
-          return;
-      }
-
-      // 如果已經有位置了，直接飛過去
-      if (userLocationCoords) {
-          startCoords = userLocationCoords;
-          if (startMarker) { startMarker.remove(); startMarker = null; } // 移除舊標記
-          map.flyTo({ center: userLocationCoords, zoom: 16, pitch: 0 });
-          checkReadyState();
-      } else {
-          // 還沒有位置，強制觸發並等待
-          startInput.value = "定位中...";
-          geolocateControl.trigger();
-          geolocateControl.once('geolocate', (e) => {
-              startInput.value = "我的位置";
-              const coords = { lng: e.coords.longitude, lat: e.coords.latitude };
-              startCoords = coords;
-              if (startMarker) { startMarker.remove(); startMarker = null; }
-              map.flyTo({ center: coords, zoom: 16, pitch: 0 });
-              checkReadyState();
-          });
-      }
-  }
-
-  function togglePickMode(mode) {
-      pickMode = (pickMode === mode) ? null : mode;
-      
-      const btnStart = document.getElementById('btn-pick-start');
-      const btnEnd = document.getElementById('btn-pick-end');
-      const canvas = document.getElementById('map'); // 直接抓容器加樣式
-
-      btnStart.classList.remove('active');
-      btnEnd.classList.remove('active');
-      document.body.classList.remove('cursor-crosshair');
-
-      if (pickMode === 'start') {
-          btnStart.classList.add('active');
-          document.body.classList.add('cursor-crosshair');
-          document.getElementById('start-input').placeholder = "請點擊地圖...";
-      } else if (pickMode === 'end') {
-          btnEnd.classList.add('active');
-          document.body.classList.add('cursor-crosshair');
-          document.getElementById('end-input').placeholder = "請點擊地圖...";
-      }
-  }
-
-  function setStartPoint(lngLat, name) {
-      if (isNavigating) return;
-      startCoords = lngLat;
-      document.getElementById('start-input').value = name;
-      document.getElementById('suggestions').style.display = 'none';
-      
-      if (startMarker) startMarker.remove();
-      startMarker = new maplibregl.Marker({ color: '#1a73e8', draggable: true }).setLngLat(lngLat).addTo(map);
-      
-      startMarker.on('dragend', () => { 
-          startCoords = startMarker.getLngLat(); 
-          isRouteCalculated = false;
-          checkReadyState();
-      });
-      map.flyTo({ center: lngLat, zoom: 16 });
-      isRouteCalculated = false;
-      checkReadyState();
-  }
-
-  function setEndPoint(lngLat, name) {
-      if (isNavigating) return;
-      endCoords = lngLat;
-      document.getElementById('end-input').value = name;
-      document.getElementById('suggestions').style.display = 'none';
-      
-      if (endMarker) endMarker.remove();
-      endMarker = new maplibregl.Marker({ color: '#d93025', draggable: true }).setLngLat(lngLat).addTo(map);
-      
-      endMarker.on('dragend', () => { 
-          endCoords = endMarker.getLngLat(); 
-          isRouteCalculated = false; 
-          checkReadyState();
-      });
-      isRouteCalculated = false;
-      checkReadyState();
   }
 
   // ==========================================
@@ -559,6 +435,7 @@
                   fullRouteCoords.forEach(c => bounds.extend(c));
                   map.fitBounds(bounds, { padding: 80 });
               } else {
+                  // 初始化顯示第一個指令
                   updateTurnInfo(currentRoutePath.instructions[0], currentRoutePath.instructions[0].distance);
               }
               renderRouteSteps();
@@ -592,13 +469,16 @@
       map.addLayer({
           id: layerId, type: 'line', source: sourceId,
           layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': '#bdbdbd', 'line-width': 12, 'line-opacity': 0.8 }
+          paint: { 
+              'line-color': '#bdbdbd', 
+              'line-width': 12, 
+              'line-opacity': 0.8,
+              'line-pitch-alignment': 'map'
+          }
       });
   }
 
   function updateBlueRoute(remainingCoords) {
-      if (!remainingCoords || remainingCoords.length < 2) return;
-
       const fgSourceId = 'active-route-source';
       const fgLayerId = 'active-route-fg';
       const data = { type: 'Feature', geometry: { type: 'LineString', coordinates: remainingCoords } };
@@ -613,11 +493,14 @@
           map.addLayer({
               id: fgLayerId, type: 'line', source: fgSourceId,
               layout: { 'line-join': 'round', 'line-cap': 'round' },
-              paint: { 'line-color': '#4285F4', 'line-width': 12, 'line-opacity': 1.0 }
+              paint: { 
+                  'line-color': '#4285F4', 
+                  'line-width': 12, 
+                  'line-opacity': 1.0,
+                  'line-pitch-alignment': 'map'
+              }
           });
       }
-
-      if (map.getLayer(fgLayerId)) map.moveLayer(fgLayerId); 
   }
 
   function clearRouteLayers() {
@@ -628,7 +511,7 @@
   }
 
   // ==========================================
-  // 導航模式 (核心邏輯：鎖定傾斜80度)
+  // 導航模式 (核心邏輯)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -639,10 +522,6 @@
       lastNavCoords = null;
       
       document.body.classList.add('nav-active');
-
-      // *** 鎖定傾斜：設定最小與最大 Pitch 為 80 (允許旋轉) ***
-      map.setMinPitch(80);
-      map.setMaxPitch(80);
 
       document.getElementById('search-panel').style.top = '-400px'; 
       navFooter.classList.remove('show');
@@ -667,10 +546,11 @@
           const rawLng = e.coords.longitude;
           const rawHeading = e.coords.heading;
 
-          // 吸附
+          // 計算吸附
           const snapResult = getNearestPointOnLine([rawLng, rawLat], fullRouteCoords);
           const deviationDist = snapResult.distance * 1000; 
 
+          // 閥值設定
           const RECALC_THRESHOLD = 50; 
 
           if (deviationDist > RECALC_THRESHOLD && !isRecalculating) {
@@ -694,6 +574,7 @@
               const mLat = dLat * 111000;
               const mLng = dLng * 111000 * Math.cos(rawLat * Math.PI / 180);
               currentDist = Math.sqrt(mLat*mLat + mLng*mLng);
+              
               if (currentDist > 3) shouldUpdateBearing = true;
           } else {
               shouldUpdateBearing = true;
@@ -708,8 +589,7 @@
           if (!isUserInteracting) {
               map.easeTo({
                   center: displayCoords,
-                  zoom: 19, 
-                  pitch: 80, // 強制維持80
+                  zoom: 19, pitch: 60, 
                   bearing: targetBearing,
                   duration: 1000, easing: (t) => t
               });
@@ -718,8 +598,11 @@
           if (shouldUpdateBearing) lastNavCoords = [rawLng, rawLat];
 
           const remainingPath = fullRouteCoords.slice(snapResult.index);
-          updateBlueRoute(remainingPath);
+          if (remainingPath.length > 1) {
+              updateBlueRoute(remainingPath);
+          }
 
+          // *** 傳入吸附點，進行精確距離運算 ***
           updateInstructionByProgress(snapResult);
       };
 
@@ -746,10 +629,6 @@
       isNavigating = false;
       isUserInteracting = false;
       document.body.classList.remove('nav-active');
-
-      // *** 解鎖傾斜 ***
-      map.setMinPitch(0);
-      map.setMaxPitch(85);
 
       if(snapBackTimer) clearTimeout(snapBackTimer);
       synth.cancel();
@@ -819,27 +698,38 @@
       return { x: xx, y: yy, dist: Math.sqrt(dx * dx + dy * dy) };
   }
   
+  // 新增：計算真實幾何距離
   function measureDist(p1, p2) {
+      // 簡單的平面投影計算 (適用於導航短距離，效能佳)
       const cosLat = Math.cos(p1[1] * Math.PI / 180);
       const dx = (p2[0] - p1[0]) * cosLat;
       const dy = p2[1] - p1[1];
+      // 1度約111000公尺
       return Math.sqrt(dx*dx + dy*dy) * 111000;
   }
 
+  // 新增：計算精確剩餘距離
   function getExactRemainingDistance(snappedPoint, currentIndex, instructionEndIndex, allCoords) {
       let totalDist = 0;
+
+      // 1. 當前吸附點 -> 下一個路徑節點的距離
       if (currentIndex < allCoords.length - 1) {
           totalDist += measureDist(snappedPoint, allCoords[currentIndex + 1]);
       }
+
+      // 2. 累加後續所有節點之間的距離
       for (let i = currentIndex + 1; i < instructionEndIndex; i++) {
           totalDist += measureDist(allCoords[i], allCoords[i+1]);
       }
+
       return totalDist;
   }
 
   // ==========================================
   // 輔助功能
   // ==========================================
+  
+  // 修改：動態更新指令與精確距離
   function updateInstructionByProgress(snapResult) {
       if (!currentRoutePath || !currentRoutePath.instructions) return;
       const instructions = currentRoutePath.instructions;
@@ -856,20 +746,30 @@
       }
 
       if (activeIns) {
+          // 使用幾何運算計算剩餘距離
           const remainingMeters = getExactRemainingDistance(currentPoint, currentCoordIndex, activeIns.interval[1], fullRouteCoords);
           updateTurnInfo(activeIns, remainingMeters);
       }
   }
 
+  // 修改：動態距離格式化
   function formatDynamicDist(m) {
       if (m > 1000) return (m/1000).toFixed(1) + " 公里";
-      if (m > 50) return (Math.round(m / 50) * 50) + " 公尺";
-      return (Math.max(0, Math.round(m / 10) * 10)) + " 公尺";
+      
+      if (m > 50) {
+          // 大於 50m，每 50m 跳一次
+          return (Math.round(m / 50) * 50) + " 公尺";
+      } else {
+          // 小於 50m，每 10m 跳一次
+          return (Math.max(0, Math.round(m / 10) * 10)) + " 公尺";
+      }
   }
 
   function updateTurnInfo(ins, realDistance) {
       if (!ins) return;
       document.getElementById('turn-text').innerText = ins.text;
+      
+      // 有即時距離就用即時，否則用 API 原始值
       const distToShow = (realDistance !== null && realDistance !== undefined) ? realDistance : ins.distance;
       document.getElementById('turn-dist').innerText = formatDynamicDist(distToShow);
 
@@ -880,6 +780,8 @@
       if (ins.sign === 6) icon = 'roundabout_right';
       document.getElementById('turn-icon').innerText = icon;
       
+      // 語音播放判斷 (避免重複)
+      // 小優化：如果距離變得很短 (例如剛進入指令)，強制再播報一次
       if (document.getElementById('turn-text').innerText !== lastSpokenText) {
          speak(ins.text);
       }
@@ -897,6 +799,56 @@
               alert("起點非「我的位置」，僅提供路徑步驟預覽。");
           }
       }
+  }
+
+  function forceUserLocation() {
+      if (isNavigating) return;
+      togglePickMode(null);
+      geolocateControl.trigger();
+      geolocateControl.once('geolocate', (e) => {
+          const userCoords = { lng: e.coords.longitude, lat: e.coords.latitude };
+          startCoords = userCoords;
+          document.getElementById('start-input').value = "我的位置";
+          if (startMarker) { startMarker.remove(); startMarker = null; }
+          map.flyTo({ center: userCoords, zoom: 16, pitch: 0 });
+          isRouteCalculated = false;
+          checkReadyState(); 
+      });
+  }
+
+  function setStartPoint(lngLat, name) {
+      if (isNavigating) return;
+      startCoords = lngLat;
+      document.getElementById('start-input').value = name;
+      document.getElementById('suggestions').style.display = 'none';
+      if (startMarker) startMarker.remove();
+      startMarker = new maplibregl.Marker({ color: '#1a73e8', draggable: true }).setLngLat(lngLat).addTo(map);
+      
+      startMarker.on('dragend', () => { 
+          startCoords = startMarker.getLngLat(); 
+          isRouteCalculated = false;
+          checkReadyState();
+      });
+      map.flyTo({ center: lngLat, zoom: 16, pitch: 0 });
+      isRouteCalculated = false;
+      checkReadyState();
+  }
+
+  function setEndPoint(lngLat, name) {
+      if (isNavigating) return;
+      endCoords = lngLat;
+      document.getElementById('end-input').value = name;
+      document.getElementById('suggestions').style.display = 'none';
+      if (endMarker) endMarker.remove();
+      endMarker = new maplibregl.Marker({ color: '#d93025', draggable: true }).setLngLat(lngLat).addTo(map);
+      
+      endMarker.on('dragend', () => { 
+          endCoords = endMarker.getLngLat(); 
+          isRouteCalculated = false; 
+          checkReadyState();
+      });
+      isRouteCalculated = false;
+      checkReadyState();
   }
 
   function checkReadyState() {
@@ -994,6 +946,29 @@
       utterance.lang = 'zh-TW';
       synth.speak(utterance);
       lastSpokenText = text;
+  }
+
+  function togglePickMode(mode) {
+      pickMode = (pickMode === mode) ? null : mode;
+      const btnStart = document.getElementById('btn-pick-start');
+      const btnEnd = document.getElementById('btn-pick-end');
+      const canvas = map.getCanvas();
+
+      btnStart.classList.remove('active');
+      btnEnd.classList.remove('active');
+      canvas.classList.remove('crosshair-cursor'); 
+
+      if (pickMode === 'start') {
+          btnStart.classList.add('active');
+          map.getCanvas().style.cursor = 'crosshair';
+          document.getElementById('start-input').placeholder = "請點擊地圖...";
+      } else if (pickMode === 'end') {
+          btnEnd.classList.add('active');
+          map.getCanvas().style.cursor = 'crosshair';
+          document.getElementById('end-input').placeholder = "請點擊地圖...";
+      } else {
+          map.getCanvas().style.cursor = '';
+      }
   }
 
   function clearEnd() {
