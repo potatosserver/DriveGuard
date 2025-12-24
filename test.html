@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (強力吸附版)</title>
+  <title>3D 智能語音導航 (穩定渲染版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -294,7 +294,6 @@
   const graphHopperKey = '7cb4eb19-e0f4-40a3-a5e0-f2c039366f32'; 
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
 
-  // --- 全域變數 ---
   let map, geolocateControl;
   let startCoords = null, endCoords = null;
   let startMarker = null, endMarker = null;
@@ -319,7 +318,6 @@
   const routeTime = document.getElementById('route-time');
   const routeDist = document.getElementById('route-dist');
 
-  // 優化導航控制變數
   let isUserInteracting = false; 
   let snapBackTimer = null;
   let lastNavCoords = null; 
@@ -345,7 +343,6 @@
         
         forceUserLocation();
 
-        // 非導航模式下更新起點
         geolocateControl.on('geolocate', (e) => {
             if (isNavigating) return;
             const userCoords = { lng: e.coords.longitude, lat: e.coords.latitude };
@@ -453,7 +450,7 @@
   }
 
   // ==========================================
-  // 繪圖與圖層管理
+  // 繪圖與圖層管理 (核心修復：防止消失)
   // ==========================================
   function drawBaseRoute(geoJsonCoords) {
       const sourceId = 'final-route-bg-source';
@@ -462,15 +459,23 @@
       if (map.getLayer(layerId)) map.removeLayer(layerId);
       if (map.getSource(sourceId)) map.removeSource(sourceId);
 
+      // 設定 tolerance: 0 以防止簡化導致的消失
       map.addSource(sourceId, {
           type: 'geojson',
-          data: { type: 'Feature', geometry: { type: 'LineString', coordinates: geoJsonCoords } }
+          data: { type: 'Feature', geometry: { type: 'LineString', coordinates: geoJsonCoords } },
+          tolerance: 0 
       });
 
+      // 設定 line-pitch-alignment: 'map' 讓線條貼地
       map.addLayer({
           id: layerId, type: 'line', source: sourceId,
           layout: { 'line-join': 'round', 'line-cap': 'round' },
-          paint: { 'line-color': '#bdbdbd', 'line-width': 12, 'line-opacity': 0.8 }
+          paint: { 
+              'line-color': '#bdbdbd', 
+              'line-width': 12, 
+              'line-opacity': 0.8,
+              'line-pitch-alignment': 'map'
+          }
       });
   }
 
@@ -480,16 +485,23 @@
       const data = { type: 'Feature', geometry: { type: 'LineString', coordinates: remainingCoords } };
 
       if (!map.getSource(fgSourceId)) {
-          map.addSource(fgSourceId, { type: 'geojson', data: data });
+          // 修復：加入 tolerance: 0
+          map.addSource(fgSourceId, { type: 'geojson', data: data, tolerance: 0 });
       } else {
           map.getSource(fgSourceId).setData(data);
       }
 
       if (!map.getLayer(fgLayerId)) {
+          // 修復：加入 line-pitch-alignment: 'map'
           map.addLayer({
               id: fgLayerId, type: 'line', source: fgSourceId,
               layout: { 'line-join': 'round', 'line-cap': 'round' },
-              paint: { 'line-color': '#4285F4', 'line-width': 12, 'line-opacity': 1.0 }
+              paint: { 
+                  'line-color': '#4285F4', 
+                  'line-width': 12, 
+                  'line-opacity': 1.0,
+                  'line-pitch-alignment': 'map'
+              }
           });
       }
   }
@@ -502,7 +514,7 @@
   }
 
   // ==========================================
-  // 導航模式 (核心邏輯)
+  // 導航模式 (吸附邏輯)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -537,14 +549,14 @@
           const rawLng = e.coords.longitude;
           const rawHeading = e.coords.heading;
 
-          // 計算吸附 (使用優化後的演算法)
+          // 計算吸附
           const snapResult = getNearestPointOnLine([rawLng, rawLat], fullRouteCoords);
-          const deviationDist = snapResult.distance * 1000; // 公尺
+          const deviationDist = snapResult.distance * 1000; 
 
-          // *** 閥值設定 ***
-          const RECALC_THRESHOLD = 50; // 50公尺
+          // 閥值設定
+          const RECALC_THRESHOLD = 50; 
 
-          // 1. 偏離過大 -> 觸發重算
+          // 偏離過大 -> 觸發重算
           if (deviationDist > RECALC_THRESHOLD && !isRecalculating) {
               console.log("偏離路徑 > 50m，重新規劃...");
               speak("偏離路徑，重新規劃中");
@@ -554,11 +566,10 @@
               return;
           }
 
-          // 2. 顯示位置：只要沒觸發重算，一律強制吸附
+          // 沒觸發重算，一律強制吸附
           const displayCoords = snapResult.point; 
           navMarker.setLngLat(displayCoords);
           
-          // 地圖轉動邏輯 (Hysteresis: 3公尺)
           let shouldUpdateBearing = false;
           let currentDist = 0;
           
@@ -603,7 +614,6 @@
       geolocateControl.on('geolocate', navLocationHandler);
       geolocateControl.trigger();
 
-      // 立即執行一次，消除延遲感
       if (startCoords) {
           const initialBearing = map.getBearing();
           handleNavUpdate({
@@ -648,35 +658,28 @@
   }
 
   // ==========================================
-  // 數學工具 (修正版：加入經度校正)
+  // 數學工具 (經度校正)
   // ==========================================
   function getNearestPointOnLine(pt, lineCoords) {
       let minDist = Infinity;
       let nearestPoint = pt;
       let nearestIndex = 0;
-
-      // 取得當前緯度的修正係數
       const cosLat = Math.cos(pt[1] * Math.PI / 180);
 
       for (let i = 0; i < lineCoords.length - 1; i++) {
           const start = lineCoords[i];
           const end = lineCoords[i+1];
-          
-          // 將經度差乘上修正係數
           const result = pDistance(
               pt[0] * cosLat, pt[1], 
               start[0] * cosLat, start[1], 
               end[0] * cosLat, end[1]
           );
-          
           if (result.dist < minDist) {
               minDist = result.dist;
-              // 還原回經緯度
               nearestPoint = [result.x / cosLat, result.y];
               nearestIndex = i;
           }
       }
-      
       const distInKm = minDist * 111; 
       return { point: nearestPoint, index: nearestIndex, distance: distInKm };
   }
@@ -706,7 +709,6 @@
       if (!currentRoutePath || !currentRoutePath.instructions) return;
       const instructions = currentRoutePath.instructions;
       let activeIns = null;
-
       for (let i = 0; i < instructions.length; i++) {
           const interval = instructions[i].interval;
           if (currentCoordIndex >= interval[0] && currentCoordIndex <= interval[1]) {
