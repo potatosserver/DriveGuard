@@ -285,19 +285,20 @@
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
   const carModelUrl = 'https://raw.githubusercontent.com/potatosserver/DriveGuard/main/Red%20Car.glb';
 
-  // --- [車輛模型設定區] (請在此修改數值以修正模型) ---
+  // --- [車輛模型參數校正] ---
   const carModelConfig = {
-      // 1. 大小縮放：
-      // 您的截圖顯示 15 太大了，我先設為 2。如果還太大，試試 0.5；太小就改 5。
-      scale: 2, 
+      // 大小設定 (您測試後覺得 4 比較剛好)
+      scale: 4, 
 
-      // 2. 旋轉修正 (角度 Degree)：
-      // X: 控制翻車 (0 為預設, 90 或 -90 可能讓它站起來)
-      // Y: 控制車頭朝向 (0, 90, 180, 270)
-      // Z: 側傾 (通常設 0)
-      // 根據您的截圖，車子側翻，建議 X 設為 0 (或嘗試 90)，Y 設為 180 (因為常背對)
-      rotateX: 0,   
+      // 旋轉修正 (角度 Degree)：
+      // 您的截圖顯示車子側躺，將 rotateX 設為 90 度可讓它站起來。
+      // 如果 90 度後變成四腳朝天，請改成 -90 (或 270)。
+      rotateX: 90,   
+      
+      // 車頭方向修正
       rotateY: 180, 
+      
+      // 側傾修正 (通常為 0)
       rotateZ: 0   
   };
   // ===========================================
@@ -390,7 +391,6 @@
     });
   }
 
-  // --- 修正後的 3D 車輛圖層建立函式 ---
   function createCarLayer(startLng, startLat) {
       return {
           id: '3d-car-model',
@@ -418,11 +418,11 @@
               loader.load(carModelUrl, (gltf) => {
                   this.scene.add(gltf.scene);
                   
-                  // --- 套用設定區的參數 ---
+                  // 套用上方的參數設定
                   const s = carModelConfig.scale;
                   gltf.scene.scale.set(s, s, s); 
                   
-                  // 角度轉弧度
+                  // 將「角度」轉為「弧度」並套用
                   gltf.scene.rotation.x = carModelConfig.rotateX * (Math.PI / 180);
                   gltf.scene.rotation.y = carModelConfig.rotateY * (Math.PI / 180);
                   gltf.scene.rotation.z = carModelConfig.rotateZ * (Math.PI / 180);
@@ -440,9 +440,8 @@
           render: function(gl, matrix) {
               const modelOrigin = [carConfig.lng, carConfig.lat];
               const modelAltitude = 0;
-              // 計算 MapLibre 的座標旋轉 (Z軸旋轉對應 Bearing)
-              // 注意：這裡的 Math.PI/2 是用來讓模型在 Mercator 座標系中「立起來」，
-              // 與上面 carModelConfig 的 rotateX 是分開的。
+              // 這裡進行地圖座標系的轉換，請勿更動
+              // Math.PI / 2 是為了配合 MapLibre 的 Z-up 座標系
               const modelRotate = [Math.PI / 2, 0, carConfig.rotation * Math.PI / 180]; 
 
               const modelAsMercatorCoordinate = maplibregl.MercatorCoordinate.fromLngLat(
