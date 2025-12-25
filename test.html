@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (3D 車輛版)</title>
+  <title>3D 智能語音導航 (3D 車輛修正版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -180,32 +180,12 @@
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     .loading-text { font-weight: 500; color: #555; }
 
-    /* --- [備用] 舊版導航箭頭樣式 --- */
-    /*
-    .nav-marker {
-        width: 44px; height: 44px; 
-        background: #4285F4;
-        border: 3px solid white;
-        border-radius: 50%;
-        box-shadow: 0 0 0 4px rgba(66, 133, 244, 0.4), 0 10px 10px rgba(0,0,0,0.3);
-        display: flex; align-items: center; justify-content: center;
-    }
-    .nav-arrow {
-        width: 0; height: 0;
-        border-left: 7px solid transparent;  
-        border-right: 7px solid transparent; 
-        border-bottom: 22px solid white;     
-        transform: translateY(-2px);
-    }
-    */
-
     /* 隱藏原生地圖定位點 */
     body.nav-active .maplibregl-user-location-dot,
     body.nav-active .maplibregl-user-location-accuracy-circle {
         display: none !important;
         opacity: 0 !important;
     }
-
   </style>
 </head>
 <body class="crosshair-cursor-enabled">
@@ -298,20 +278,36 @@
 </div>
 
 <script>
+  // ===========================================
+  // 設定區域
+  // ===========================================
   const graphHopperKey = '7cb4eb19-e0f4-40a3-a5e0-f2c039366f32'; 
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
-  
-  // 修正後的 GLB 原始檔案路徑 (Raw)
   const carModelUrl = 'https://raw.githubusercontent.com/potatosserver/DriveGuard/main/Red%20Car.glb';
+
+  // --- [車輛模型設定區] (請在此修改數值以修正模型) ---
+  const carModelConfig = {
+      // 1. 大小縮放：
+      // 您的截圖顯示 15 太大了，我先設為 2。如果還太大，試試 0.5；太小就改 5。
+      scale: 2, 
+
+      // 2. 旋轉修正 (角度 Degree)：
+      // X: 控制翻車 (0 為預設, 90 或 -90 可能讓它站起來)
+      // Y: 控制車頭朝向 (0, 90, 180, 270)
+      // Z: 側傾 (通常設 0)
+      // 根據您的截圖，車子側翻，建議 X 設為 0 (或嘗試 90)，Y 設為 180 (因為常背對)
+      rotateX: 0,   
+      rotateY: 180, 
+      rotateZ: 0   
+  };
+  // ===========================================
 
   let map, geolocateControl;
   let startCoords = null, endCoords = null;
   let startMarker = null, endMarker = null;
-  // let navMarker = null; // --- 舊版標記變數 (備用) ---
   
   // --- 3D 車輛相關變數 ---
   let carLayer = null;
-  // 這裡儲存車輛當前的座標 (Lng, Lat) 與旋轉 (Degrees)
   let carConfig = { lng: 121.5, lat: 25.04, rotation: 0 };
   
   let currentRoutePath = null; 
@@ -394,7 +390,7 @@
     });
   }
 
-  // --- 建立 3D 車輛 Custom Layer ---
+  // --- 修正後的 3D 車輛圖層建立函式 ---
   function createCarLayer(startLng, startLat) {
       return {
           id: '3d-car-model',
@@ -405,7 +401,7 @@
               this.camera = new THREE.Camera();
               this.scene = new THREE.Scene();
 
-              // 建立 Two.js 的 DirectionalLight (模擬太陽光)
+              // 燈光設定
               const directionalLight = new THREE.DirectionalLight(0xffffff);
               directionalLight.position.set(0, -70, 100).normalize();
               this.scene.add(directionalLight);
@@ -414,7 +410,6 @@
               directionalLight2.position.set(0, 70, 100).normalize();
               this.scene.add(directionalLight2);
               
-              // 環境光
               const ambientLight = new THREE.AmbientLight(0xffffff, 0.6); 
               this.scene.add(ambientLight);
 
@@ -423,16 +418,14 @@
               loader.load(carModelUrl, (gltf) => {
                   this.scene.add(gltf.scene);
                   
-                  // 根據模型調整縮放 (此車輛模型可能很大，需縮小)
-                  // 嘗試縮放係數，如果不見了或太大，調整這裡
-                  const s = 15; 
+                  // --- 套用設定區的參數 ---
+                  const s = carModelConfig.scale;
                   gltf.scene.scale.set(s, s, s); 
                   
-                  // 調整模型本身的旋轉 (通常模型是朝 Z 軸或 X 軸)
-                  // 假設車頭朝向需要修正，這裡先轉 90 度看看
-                  // 你可以根據實際模型朝向調整 rotation.z 或 y
-                  gltf.scene.rotation.x = Math.PI / 2; // 讓車立起來
-                  gltf.scene.rotation.y = Math.PI;     // 180度轉向 (視模型而定)
+                  // 角度轉弧度
+                  gltf.scene.rotation.x = carModelConfig.rotateX * (Math.PI / 180);
+                  gltf.scene.rotation.y = carModelConfig.rotateY * (Math.PI / 180);
+                  gltf.scene.rotation.z = carModelConfig.rotateZ * (Math.PI / 180);
               });
 
               this.map = map;
@@ -445,17 +438,18 @@
           },
 
           render: function(gl, matrix) {
-              // 取得車輛目前座標的 Mercator 投影
               const modelOrigin = [carConfig.lng, carConfig.lat];
               const modelAltitude = 0;
-              const modelRotate = [Math.PI / 2, 0, carConfig.rotation * Math.PI / 180]; // Z 軸旋轉對應地圖 Bearing
+              // 計算 MapLibre 的座標旋轉 (Z軸旋轉對應 Bearing)
+              // 注意：這裡的 Math.PI/2 是用來讓模型在 Mercator 座標系中「立起來」，
+              // 與上面 carModelConfig 的 rotateX 是分開的。
+              const modelRotate = [Math.PI / 2, 0, carConfig.rotation * Math.PI / 180]; 
 
               const modelAsMercatorCoordinate = maplibregl.MercatorCoordinate.fromLngLat(
                   modelOrigin,
                   modelAltitude
               );
 
-              // 計算模型矩陣
               const modelTransform = {
                   translateX: modelAsMercatorCoordinate.x,
                   translateY: modelAsMercatorCoordinate.y,
@@ -466,7 +460,6 @@
                   scale: modelAsMercatorCoordinate.meterInMercatorCoordinateUnits()
               };
 
-              // 構建矩陣來傳遞給 Three.js
               const rotationX = new THREE.Matrix4().makeRotationAxis(
                   new THREE.Vector3(1, 0, 0), modelTransform.rotateX
               );
@@ -662,25 +655,6 @@
 
       map.setMinPitch(60);
       map.setMaxPitch(60);
-
-      // --- [備用] 舊版標記代碼 (已註解) ---
-      /*
-      if (!navMarker) {
-          const el = document.createElement('div');
-          el.className = 'nav-marker';
-          el.innerHTML = '<div class="nav-arrow"></div>'; 
-          
-          navMarker = new maplibregl.Marker({ 
-              element: el, 
-              rotationAlignment: 'map',
-              pitchAlignment: 'map' 
-          })
-          .setLngLat(startCoords)
-          .addTo(map);
-      } else {
-          navMarker.addTo(map);
-      }
-      */
       
       // --- 新版 3D 車輛 ---
       // 1. 設定初始位置
@@ -704,8 +678,6 @@
           
           carConfig.rotation = initialBearing; // 更新車輛角度
 
-          // navMarker.setRotation(initialBearing); // [舊版備用]
-          
           map.jumpTo({
               center: startCoords,
               zoom: 19,
@@ -741,7 +713,6 @@
           }
 
           const displayCoords = snapResult.point; 
-          // navMarker.setLngLat(displayCoords); // [舊版備用]
           
           // 更新 3D 車輛位置
           carConfig.lng = displayCoords[0];
@@ -764,7 +735,6 @@
           let targetBearing = map.getBearing();
           
           if (rawHeading !== null && !isNaN(rawHeading) && rawHeading !== 0) {
-              // navMarker.setRotation(rawHeading); // [舊版備用]
               carConfig.rotation = rawHeading;       // 3D 車輛旋轉
               targetBearing = rawHeading;
           } else if (shouldUpdateBearing) {
@@ -772,7 +742,6 @@
                   const p1 = turf.point(fullRouteCoords[snapResult.index]);
                   const p2 = turf.point(fullRouteCoords[snapResult.index + 1]);
                   const pathBearing = turf.bearing(p1, p2);
-                  // navMarker.setRotation(pathBearing); // [舊版備用]
                   carConfig.rotation = pathBearing;     // 3D 車輛旋轉
                   targetBearing = pathBearing;
               }
@@ -821,8 +790,6 @@
           geolocateControl.off('geolocate', navLocationHandler);
           navLocationHandler = null;
       }
-      
-      // if (navMarker) navMarker.remove(); // [舊版備用]
       
       // 移除 3D 車輛圖層
       if (map.getLayer('3d-car-model')) {
