@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (導航點完全鎖定版)</title>
+  <title>3D 智能語音導航 (傾角鎖定 85 度版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -175,12 +175,6 @@
     .loading-text { font-weight: 500; color: #555; }
 
     /* --- 導航專用大標記 --- */
-    /* 
-       修正說明：
-       這裡移除了 transition: transform 屬性。
-       移除後，當使用者手動拖曳地圖時，DOM 元素會即時隨地圖 canvas 更新，
-       不會產生「滑動」或「跟不上」的漂移感。
-    */
     .nav-marker {
         width: 32px; height: 32px;
         background: #4285F4;
@@ -188,7 +182,6 @@
         border-radius: 50%;
         box-shadow: 0 0 0 10px rgba(66, 133, 244, 0.3);
         display: flex; align-items: center; justify-content: center;
-        /* transition: transform 0.3s;  <-- 已移除這行 */
     }
     .nav-arrow {
         width: 0; height: 0;
@@ -336,13 +329,14 @@
       zoom: 15,
       pitch: 0,
       bearing: 0,
-      antialias: true
+      antialias: true,
+      maxPitch: 85 // 重要修正：允許地圖傾斜到 85 度
     });
 
     map.on('load', () => {
         geolocateControl = new maplibregl.GeolocateControl({
             positionOptions: { enableHighAccuracy: true },
-            trackUserLocation: false, // 確保不與導航邏輯打架
+            trackUserLocation: false, 
             showUserHeading: true
         });
         map.addControl(geolocateControl);
@@ -366,7 +360,6 @@
             }
         });
 
-        // 偵測使用者是否正在手動移動地圖
         map.on('movestart', (e) => {
             if (isNavigating && e.originalEvent) {
                 isUserInteracting = true;
@@ -385,9 +378,17 @@
     });
   }
 
-  // ==========================================
-  // 路徑規劃
-  // ==========================================
+  // ... (其餘路徑規劃與繪圖函式保持不變，包含之前修正的 findFirstSymbolLayer) ...
+  function findFirstSymbolLayer() {
+      const layers = map.getStyle().layers;
+      for (const layer of layers) {
+          if (layer.type === 'symbol') {
+              return layer.id;
+          }
+      }
+      return undefined;
+  }
+
   async function calculateRoute(startLoc = startCoords) {
       if (!startLoc || !endCoords) return;
       if (isRecalculating) return;
@@ -458,9 +459,6 @@
       }
   }
 
-  // ==========================================
-  // 繪圖與圖層管理
-  // ==========================================
   function drawBaseRoute(geoJsonCoords) {
       const sourceId = 'final-route-bg-source';
       const layerId = 'final-route-bg-layer';
@@ -473,6 +471,8 @@
           data: { type: 'Feature', geometry: { type: 'LineString', coordinates: geoJsonCoords } }
       });
 
+      const firstSymbolId = findFirstSymbolLayer();
+
       map.addLayer({
           id: layerId, type: 'line', source: sourceId,
           layout: { 'line-join': 'round', 'line-cap': 'round' },
@@ -481,7 +481,7 @@
               'line-width': 12, 
               'line-opacity': 0.8
           }
-      });
+      }, firstSymbolId);
   }
 
   function updateBlueRoute(remainingCoords) {
@@ -496,6 +496,8 @@
       }
 
       if (!map.getLayer(fgLayerId)) {
+          const firstSymbolId = findFirstSymbolLayer();
+
           map.addLayer({
               id: fgLayerId, type: 'line', source: fgSourceId,
               layout: { 'line-join': 'round', 'line-cap': 'round' },
@@ -504,7 +506,7 @@
                   'line-width': 12, 
                   'line-opacity': 1.0
               }
-          });
+          }, firstSymbolId);
       }
   }
 
@@ -516,7 +518,7 @@
   }
 
   // ==========================================
-  // 導航模式 (核心邏輯)
+  // 導航模式 (核心修改處：鎖定 Pitch)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -534,12 +536,17 @@
       document.getElementById('btn-exit-nav').style.display = 'flex';
       closeStepsPanel();
 
+      // --- 鎖定傾角設定 ---
+      // 先設定 Max 為 85 (確保可以轉到這麼斜)
+      map.setMaxPitch(85);
+      // 再設定 Min 為 85 (強制鎖定，使用者無法轉回來)
+      map.setMinPitch(85);
+
       if (!navMarker) {
           const el = document.createElement('div');
           el.className = 'nav-marker';
           el.innerHTML = '<div class="nav-arrow"></div>'; 
           
-          // 修正：加入 pitchAlignment: 'map'，確保在 3D 視角下貼合地面
           navMarker = new maplibregl.Marker({ 
               element: el, 
               rotationAlignment: 'map',
@@ -557,7 +564,6 @@
           const rawLng = e.coords.longitude;
           const rawHeading = e.coords.heading;
 
-          // 計算吸附
           const snapResult = getNearestPointOnLine([rawLng, rawLat], fullRouteCoords);
           const deviationDist = snapResult.distance * 1000; 
           const RECALC_THRESHOLD = 50; 
@@ -598,7 +604,7 @@
               map.easeTo({
                   center: displayCoords,
                   zoom: 19, 
-                  pitch: 60, 
+                  pitch: 85, // 導航時強制 85 度
                   bearing: targetBearing,
                   duration: 1000, 
                   easing: (t) => t
@@ -620,7 +626,8 @@
       geolocateControl.trigger();
 
       if (startCoords) {
-          map.easeTo({ center: startCoords, zoom: 19, pitch: 60, duration: 1500 });
+          // 初始動畫也轉到 85 度
+          map.easeTo({ center: startCoords, zoom: 19, pitch: 85, duration: 1500 });
       }
 
       speak("開始導航");
@@ -647,6 +654,10 @@
       closeStepsPanel();
       navFooter.classList.add('show');
       
+      // 解除鎖定：恢復 minPitch 為 0，讓使用者可以看回俯視圖
+      map.setMinPitch(0);
+      map.setMaxPitch(85); 
+
       map.easeTo({ pitch: 0, zoom: 16, bearing: 0 });
       
       if (fullRouteCoords.length > 0) {
@@ -654,9 +665,7 @@
       }
   }
 
-  // ==========================================
-  // 數學工具 
-  // ==========================================
+  // ... (其餘數學運算與輔助功能保持不變) ...
   function getNearestPointOnLine(pt, lineCoords) {
       let minDist = Infinity;
       let nearestPoint = pt;
@@ -719,9 +728,6 @@
       return totalDist;
   }
 
-  // ==========================================
-  // 輔助功能
-  // ==========================================
   function updateInstructionByProgress(snapResult) {
       if (!currentRoutePath || !currentRoutePath.instructions) return;
       const instructions = currentRoutePath.instructions;
