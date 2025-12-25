@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (真實 3D 模型版)</title>
+  <title>3D 智能語音導航 (自訂紅色跑車版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -188,11 +188,6 @@
         opacity: 0 !important;
     }
 
-    /* 
-       注意：原本的 .nav-marker 樣式已移除
-       因為我們改用 WebGL (Three.js) 直接在地圖畫車子
-    */
-
   </style>
 </head>
 <body class="crosshair-cursor-enabled">
@@ -288,13 +283,14 @@
   const graphHopperKey = '7cb4eb19-e0f4-40a3-a5e0-f2c039366f32'; 
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
   
-  // 3D 車輛模型 URL (這是一個開源的低面數跑車模型)
-  const carModelUrl = 'https://raw.githubusercontent.com/baronwatts/models/master/sportcar.glb';
+  // ===============================================
+  // ★ 修改處：使用 CDN 載入您指定的 Red Car.glb
+  // ===============================================
+  const carModelUrl = 'https://cdn.jsdelivr.net/gh/potatosserver/DriveGuard@main/Red%20Car.glb';
 
   let map, geolocateControl;
   let startCoords = null, endCoords = null;
   let startMarker = null, endMarker = null;
-  // 注意：不再使用 navMarker (DOM)，改用 Three.js 的 carModel
   
   let currentRoutePath = null; 
   let fullRouteCoords = []; 
@@ -321,7 +317,6 @@
 
   // --- Three.js 相關變數 ---
   let carModel = null;
-  let carMixer = null; 
   let carLayer = null;
 
   function initMap() {
@@ -379,7 +374,7 @@
             }
         });
         
-        // 預先載入 3D 車輛圖層 (但預設隱藏)
+        // 預先載入 3D 車輛圖層
         add3DCarLayer();
     });
   }
@@ -388,7 +383,6 @@
   // Three.js Custom Layer 設定 (核心 3D 邏輯)
   // ==========================================
   function add3DCarLayer() {
-      // 建立一個 Custom Layer 物件
       const threeJSLayer = {
           id: '3d-car-model',
           type: 'custom',
@@ -398,30 +392,56 @@
               this.camera = new THREE.Camera();
               this.scene = new THREE.Scene();
 
-              // 建立 Two.js / Three.js 燈光
+              // --- 燈光設定 (確保紅色車子顏色正確) ---
               const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
               this.scene.add(ambientLight);
-              const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
-              directionalLight.position.set(0, -70, 100).normalize();
+
+              const directionalLight = new THREE.DirectionalLight(0xffffff, 1.2);
+              directionalLight.position.set(10, -50, 50).normalize();
               this.scene.add(directionalLight);
+              
+              // 補光
+              const spotLight = new THREE.SpotLight(0xffffff, 1.0);
+              spotLight.position.set(0, 0, 100);
+              this.scene.add(spotLight);
 
               // 載入 GLB 模型
               const loader = new THREE.GLTFLoader();
               loader.load(carModelUrl, (gltf) => {
                   carModel = gltf.scene;
                   
-                  // 調整模型大小與顏色 (這款模型預設有點大且是橘色)
-                  // 我們把它縮小並可以改色，這裡保持原色或稍微調整
-                  const scale = 3; // 根據模型調整大小
+                  // ==============================
+                  // ★ 車輛尺寸與方向修正區 ★
+                  // ==============================
+                  const scale = 2.0; // 調整這裡來改變車子大小
                   carModel.scale.set(scale, scale, scale);
                   
-                  // 修正模型朝向 (這款模型預設朝向 +Z，需要轉向)
+                  // 旋轉修正 (根據大多數 GLB，通常需要轉 90 度讓車頭朝 X 軸)
+                  // 如果車子橫著走，請調整這裡
                   carModel.rotation.x = 90 * Math.PI / 180; 
                   carModel.rotation.y = 180 * Math.PI / 180; 
 
+                  // 開啟材質修正 (避免顏色過曝)
+                  carModel.traverse((node) => {
+                    if (node.isMesh) {
+                        // 讓紅色更深沉
+                        if(node.material) {
+                            node.material.roughness = 0.5;
+                            node.material.metalness = 0.5;
+                        }
+                    }
+                  });
+
                   this.scene.add(carModel);
-                  // 初始位置設在遠處
                   this.updatePosition([0, 0], 0); 
+              }, undefined, (error) => {
+                  console.error("模型載入失敗:", error);
+                  // 備用方案: 如果載入失敗，顯示一個簡單的紅箭頭
+                  const geo = new THREE.ConeGeometry(2, 6, 8);
+                  const mat = new THREE.MeshLambertMaterial({color: 0xff0000});
+                  carModel = new THREE.Mesh(geo, mat);
+                  carModel.rotation.x = 90 * Math.PI / 180; 
+                  this.scene.add(carModel);
               });
 
               this.map = map;
@@ -431,10 +451,11 @@
                   antialias: true
               });
               this.renderer.autoClear = false;
+              // 色調映射：讓顏色更真實
+              this.renderer.outputEncoding = THREE.sRGBEncoding;
           },
           
           render: function (gl, matrix) {
-              // 同步地圖相機矩陣
               const m = new THREE.Matrix4().fromArray(matrix);
               const l = new THREE.Matrix4().makeTranslation(
                   maplibregl.MercatorCoordinate.fromLngLat(map.getCenter(), 0).x,
@@ -442,7 +463,6 @@
                   0
               );
               this.camera.projectionMatrix = m.multiply(l);
-              
               this.renderer.resetState();
               this.renderer.render(this.scene, this.camera);
               this.map.triggerRepaint();
@@ -456,22 +476,17 @@
                   0
               );
               
-              // 更新 Three.js 物件位置
               carModel.position.set(
                   modelLocation.x,
                   modelLocation.y,
                   modelLocation.z
               );
 
-              // 同步模型大小 (保持在世界座標中的大小一致)
-              // 由於 Mercator 投影在高緯度會變形，這裡做簡單的 scale 補償
-              // 但對於小範圍導航，固定 scale 通常足夠
-              // 若要非常精確：const scale = modelLocation.meterInMercatorCoordinateUnits() * 3;
-              const scale = modelLocation.meterInMercatorCoordinateUnits() * 4.5; // 4.5 是車輛大小係數
+              // 這裡可以微調車子在地圖上的大小比例
+              const scale = modelLocation.meterInMercatorCoordinateUnits() * 4.5; 
               carModel.scale.set(scale, scale, scale);
 
-              // 旋轉 (注意 Three.js 座標系與 MapLibre 差異)
-              // 這裡需要根據模型的原始朝向調整
+              // 旋轉
               carModel.rotation.z = -rotationDeg * Math.PI / 180; 
           }
       };
@@ -649,7 +664,6 @@
       map.setMaxPitch(60);
 
       // --- 顯示 3D 車輛 ---
-      // 確保車輛在起點
       update3DCar(startCoords, 0);
 
       // 初始朝向計算
@@ -668,7 +682,6 @@
           const finalTargetPt = turf.point(fullRouteCoords[targetIndex]);
           initialBearing = turf.bearing(startPt, finalTargetPt);
           
-          // 更新車輛角度
           update3DCar(startCoords, initialBearing);
           
           map.jumpTo({
@@ -716,7 +729,6 @@
           let targetBearing = map.getBearing();
           
           if (rawHeading !== null && !isNaN(rawHeading) && rawHeading !== 0) {
-              // 更新車輛位置與角度 (GPS 方向)
               update3DCar(displayCoords, rawHeading);
               targetBearing = rawHeading;
           } else if (shouldUpdateBearing) {
@@ -724,18 +736,12 @@
                   const p1 = turf.point(fullRouteCoords[snapResult.index]);
                   const p2 = turf.point(fullRouteCoords[snapResult.index + 1]);
                   const pathBearing = turf.bearing(p1, p2);
-                  // 更新車輛位置與角度 (路徑推算方向)
                   update3DCar(displayCoords, pathBearing);
                   targetBearing = pathBearing;
               } else {
-                  // 只更新位置
                   update3DCar(displayCoords, targetBearing);
               }
           } else {
-              // 靜止或微動時，只更新位置，不轉向
-              // 注意：這裡還是需要傳入當前角度，否則車子會轉回0度
-              // 我們假設車子角度不變，或從 carLayer 狀態獲取有點麻煩，
-              // 這裡簡化：如果不更新 bearing，則保持地圖當前的 bearing
               update3DCar(displayCoords, map.getBearing());
           }
 
@@ -780,7 +786,7 @@
           navLocationHandler = null;
       }
       
-      // 這裡不移除圖層，而是將車子移到視線外即可
+      // 隱藏車輛
       if(carLayer) {
         carLayer.updatePosition([0,0], 0);
       }
