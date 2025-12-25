@@ -2,14 +2,19 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (箭頭與朝向修正版)</title>
+  <title>3D 智能語音導航 (真實 3D 模型版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  
   <!-- Turf.js 用於計算方位角 -->
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
+
+  <!-- Three.js (3D 引擎) & GLTFLoader (模型載入器) -->
+  <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
+  <script src="https://unpkg.com/three@0.147.0/examples/js/loaders/GLTFLoader.js"></script>
 
   <!-- Google Fonts & Icons -->
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
@@ -176,35 +181,17 @@
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     .loading-text { font-weight: 500; color: #555; }
 
-    /* --- 導航專用大標記 (樣式優化) --- */
-    .nav-marker {
-        width: 44px; height: 44px; 
-        background: #4285F4;
-        border: 3px solid white;
-        border-radius: 50%;
-        box-shadow: 0 0 0 4px rgba(66, 133, 244, 0.4), 0 10px 10px rgba(0,0,0,0.3);
-        display: flex; align-items: center; justify-content: center;
-    }
-    /* 
-      修改說明：
-      這裡將箭頭改為「細長的銳角三角形」。
-      border-left/right 變小 (7px)，border-bottom 變大 (22px)。
-      這樣看起來就像一個尖銳的箭頭，能清楚指示前方。
-    */
-    .nav-arrow {
-        width: 0; height: 0;
-        border-left: 7px solid transparent;  
-        border-right: 7px solid transparent; 
-        border-bottom: 22px solid white;     
-        transform: translateY(-2px);
-    }
-
     /* 隱藏原生地圖定位點 */
     body.nav-active .maplibregl-user-location-dot,
     body.nav-active .maplibregl-user-location-accuracy-circle {
         display: none !important;
         opacity: 0 !important;
     }
+
+    /* 
+       注意：原本的 .nav-marker 樣式已移除
+       因為我們改用 WebGL (Three.js) 直接在地圖畫車子
+    */
 
   </style>
 </head>
@@ -300,11 +287,14 @@
 <script>
   const graphHopperKey = '7cb4eb19-e0f4-40a3-a5e0-f2c039366f32'; 
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
+  
+  // 3D 車輛模型 URL (這是一個開源的低面數跑車模型)
+  const carModelUrl = 'https://raw.githubusercontent.com/baronwatts/models/master/sportcar.glb';
 
   let map, geolocateControl;
   let startCoords = null, endCoords = null;
   let startMarker = null, endMarker = null;
-  let navMarker = null; 
+  // 注意：不再使用 navMarker (DOM)，改用 Three.js 的 carModel
   
   let currentRoutePath = null; 
   let fullRouteCoords = []; 
@@ -328,6 +318,11 @@
   let isUserInteracting = false; 
   let snapBackTimer = null;
   let lastNavCoords = null; 
+
+  // --- Three.js 相關變數 ---
+  let carModel = null;
+  let carMixer = null; 
+  let carLayer = null;
 
   function initMap() {
     map = new maplibregl.Map({
@@ -383,8 +378,115 @@
                 }, 5000); 
             }
         });
+        
+        // 預先載入 3D 車輛圖層 (但預設隱藏)
+        add3DCarLayer();
     });
   }
+
+  // ==========================================
+  // Three.js Custom Layer 設定 (核心 3D 邏輯)
+  // ==========================================
+  function add3DCarLayer() {
+      // 建立一個 Custom Layer 物件
+      const threeJSLayer = {
+          id: '3d-car-model',
+          type: 'custom',
+          renderingMode: '3d',
+          
+          onAdd: function (map, gl) {
+              this.camera = new THREE.Camera();
+              this.scene = new THREE.Scene();
+
+              // 建立 Two.js / Three.js 燈光
+              const ambientLight = new THREE.AmbientLight(0xffffff, 0.8);
+              this.scene.add(ambientLight);
+              const directionalLight = new THREE.DirectionalLight(0xffffff, 0.6);
+              directionalLight.position.set(0, -70, 100).normalize();
+              this.scene.add(directionalLight);
+
+              // 載入 GLB 模型
+              const loader = new THREE.GLTFLoader();
+              loader.load(carModelUrl, (gltf) => {
+                  carModel = gltf.scene;
+                  
+                  // 調整模型大小與顏色 (這款模型預設有點大且是橘色)
+                  // 我們把它縮小並可以改色，這裡保持原色或稍微調整
+                  const scale = 3; // 根據模型調整大小
+                  carModel.scale.set(scale, scale, scale);
+                  
+                  // 修正模型朝向 (這款模型預設朝向 +Z，需要轉向)
+                  carModel.rotation.x = 90 * Math.PI / 180; 
+                  carModel.rotation.y = 180 * Math.PI / 180; 
+
+                  this.scene.add(carModel);
+                  // 初始位置設在遠處
+                  this.updatePosition([0, 0], 0); 
+              });
+
+              this.map = map;
+              this.renderer = new THREE.WebGLRenderer({
+                  canvas: map.getCanvas(),
+                  context: gl,
+                  antialias: true
+              });
+              this.renderer.autoClear = false;
+          },
+          
+          render: function (gl, matrix) {
+              // 同步地圖相機矩陣
+              const m = new THREE.Matrix4().fromArray(matrix);
+              const l = new THREE.Matrix4().makeTranslation(
+                  maplibregl.MercatorCoordinate.fromLngLat(map.getCenter(), 0).x,
+                  maplibregl.MercatorCoordinate.fromLngLat(map.getCenter(), 0).y,
+                  0
+              );
+              this.camera.projectionMatrix = m.multiply(l);
+              
+              this.renderer.resetState();
+              this.renderer.render(this.scene, this.camera);
+              this.map.triggerRepaint();
+          },
+
+          updatePosition: function(lngLat, rotationDeg) {
+              if (!carModel) return;
+              
+              const modelLocation = maplibregl.MercatorCoordinate.fromLngLat(
+                  lngLat, 
+                  0
+              );
+              
+              // 更新 Three.js 物件位置
+              carModel.position.set(
+                  modelLocation.x,
+                  modelLocation.y,
+                  modelLocation.z
+              );
+
+              // 同步模型大小 (保持在世界座標中的大小一致)
+              // 由於 Mercator 投影在高緯度會變形，這裡做簡單的 scale 補償
+              // 但對於小範圍導航，固定 scale 通常足夠
+              // 若要非常精確：const scale = modelLocation.meterInMercatorCoordinateUnits() * 3;
+              const scale = modelLocation.meterInMercatorCoordinateUnits() * 4.5; // 4.5 是車輛大小係數
+              carModel.scale.set(scale, scale, scale);
+
+              // 旋轉 (注意 Three.js 座標系與 MapLibre 差異)
+              // 這裡需要根據模型的原始朝向調整
+              carModel.rotation.z = -rotationDeg * Math.PI / 180; 
+          }
+      };
+
+      map.addLayer(threeJSLayer);
+      carLayer = threeJSLayer;
+  }
+
+  // 用來給外部呼叫更新車輛的函式
+  function update3DCar(lngLat, bearing) {
+      if (carLayer && carLayer.updatePosition) {
+          carLayer.updatePosition(lngLat, bearing);
+      }
+  }
+
 
   function findFirstSymbolLayer() {
       const layers = map.getStyle().layers;
@@ -525,7 +627,7 @@
   }
 
   // ==========================================
-  // 導航模式
+  // 導航模式 (JS 修正處)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -546,30 +648,16 @@
       map.setMinPitch(60);
       map.setMaxPitch(60);
 
-      if (!navMarker) {
-          const el = document.createElement('div');
-          el.className = 'nav-marker';
-          el.innerHTML = '<div class="nav-arrow"></div>'; 
-          
-          navMarker = new maplibregl.Marker({ 
-              element: el, 
-              rotationAlignment: 'map',
-              pitchAlignment: 'map' 
-          })
-          .setLngLat(startCoords)
-          .addTo(map);
-      } else {
-          navMarker.addTo(map);
-      }
+      // --- 顯示 3D 車輛 ---
+      // 確保車輛在起點
+      update3DCar(startCoords, 0);
 
-      // --- 修正：初始朝向計算 ---
-      // 不只抓前兩點，而是找到前方至少距離 5 公尺的點，確保方向正確，避免因為點太密導致方向錯誤
+      // 初始朝向計算
       let initialBearing = 0;
       if (fullRouteCoords.length > 1) {
           let targetIndex = 1;
           const startPt = turf.point(fullRouteCoords[0]);
           
-          // 往後尋找直到距離大於 5 米，或者找完為止
           while(targetIndex < fullRouteCoords.length - 1) {
               const nextPt = turf.point(fullRouteCoords[targetIndex]);
               const dist = turf.distance(startPt, nextPt, {units: 'meters'});
@@ -580,7 +668,8 @@
           const finalTargetPt = turf.point(fullRouteCoords[targetIndex]);
           initialBearing = turf.bearing(startPt, finalTargetPt);
           
-          navMarker.setRotation(initialBearing);
+          // 更新車輛角度
+          update3DCar(startCoords, initialBearing);
           
           map.jumpTo({
               center: startCoords,
@@ -609,7 +698,6 @@
           }
 
           const displayCoords = snapResult.point; 
-          navMarker.setLngLat(displayCoords);
           
           let shouldUpdateBearing = false;
           let currentDist = 0;
@@ -628,16 +716,27 @@
           let targetBearing = map.getBearing();
           
           if (rawHeading !== null && !isNaN(rawHeading) && rawHeading !== 0) {
-              navMarker.setRotation(rawHeading);
+              // 更新車輛位置與角度 (GPS 方向)
+              update3DCar(displayCoords, rawHeading);
               targetBearing = rawHeading;
           } else if (shouldUpdateBearing) {
               if (snapResult.index < fullRouteCoords.length - 1) {
                   const p1 = turf.point(fullRouteCoords[snapResult.index]);
                   const p2 = turf.point(fullRouteCoords[snapResult.index + 1]);
                   const pathBearing = turf.bearing(p1, p2);
-                  navMarker.setRotation(pathBearing);
+                  // 更新車輛位置與角度 (路徑推算方向)
+                  update3DCar(displayCoords, pathBearing);
                   targetBearing = pathBearing;
+              } else {
+                  // 只更新位置
+                  update3DCar(displayCoords, targetBearing);
               }
+          } else {
+              // 靜止或微動時，只更新位置，不轉向
+              // 注意：這裡還是需要傳入當前角度，否則車子會轉回0度
+              // 我們假設車子角度不變，或從 carLayer 狀態獲取有點麻煩，
+              // 這裡簡化：如果不更新 bearing，則保持地圖當前的 bearing
+              update3DCar(displayCoords, map.getBearing());
           }
 
           if (!isUserInteracting) {
@@ -681,7 +780,10 @@
           navLocationHandler = null;
       }
       
-      if (navMarker) navMarker.remove();
+      // 這裡不移除圖層，而是將車子移到視線外即可
+      if(carLayer) {
+        carLayer.updatePosition([0,0], 0);
+      }
 
       document.getElementById('search-panel').style.top = '16px';
       document.getElementById('turn-instruction').style.display = 'none';
@@ -837,6 +939,7 @@
       });
   }
 
+  // 修改：設定起點圖釘
   function setStartPoint(lngLat, name) {
       if (isNavigating) return;
       startCoords = lngLat;
@@ -844,6 +947,7 @@
       document.getElementById('suggestions').style.display = 'none';
       if (startMarker) startMarker.remove();
       
+      // pitchAlignment: 'viewport' 確保圖釘直立，不會貼地變形
       startMarker = new maplibregl.Marker({ 
           color: '#1a73e8', 
           draggable: true,
@@ -860,6 +964,7 @@
       checkReadyState();
   }
 
+  // 修改：設定終點圖釘
   function setEndPoint(lngLat, name) {
       if (isNavigating) return;
       endCoords = lngLat;
@@ -867,6 +972,7 @@
       document.getElementById('suggestions').style.display = 'none';
       if (endMarker) endMarker.remove();
       
+      // pitchAlignment: 'viewport' 確保圖釘直立，不會貼地變形
       endMarker = new maplibregl.Marker({ 
           color: '#d93025', 
           draggable: true,
@@ -1015,6 +1121,8 @@
       currentRoutePath = null;
       fullRouteCoords = [];
       isRouteCalculated = false;
+      
+      if(carLayer) carLayer.updatePosition([0,0], 0);
   }
 
   initMap();
