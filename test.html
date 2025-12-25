@@ -2,12 +2,14 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (傾角鎖定 85 度版)</title>
+  <title>3D 智能語音導航 (60度視角優化版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
   <link href="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.css" rel="stylesheet" />
   <script src="https://unpkg.com/maplibre-gl@3.6.2/dist/maplibre-gl.js"></script>
+  <!-- Turf.js 用於計算方位角 -->
+  <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
   <!-- Google Fonts & Icons -->
   <link href="https://fonts.googleapis.com/css2?family=Roboto:wght@400;500;700&display=swap" rel="stylesheet">
@@ -174,20 +176,21 @@
     @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     .loading-text { font-weight: 500; color: #555; }
 
-    /* --- 導航專用大標記 --- */
+    /* --- 導航專用大標記 (優化樣式) --- */
     .nav-marker {
-        width: 32px; height: 32px;
+        width: 44px; height: 44px; /* 加大尺寸 */
         background: #4285F4;
         border: 3px solid white;
         border-radius: 50%;
-        box-shadow: 0 0 0 10px rgba(66, 133, 244, 0.3);
+        /* 增加強烈的陰影，讓它在貼地時看起來有立體感 */
+        box-shadow: 0 0 0 4px rgba(66, 133, 244, 0.4), 0 10px 10px rgba(0,0,0,0.3);
         display: flex; align-items: center; justify-content: center;
     }
     .nav-arrow {
         width: 0; height: 0;
-        border-left: 8px solid transparent;
-        border-right: 8px solid transparent;
-        border-bottom: 14px solid white;
+        border-left: 10px solid transparent; /* 加大箭頭 */
+        border-right: 10px solid transparent;
+        border-bottom: 18px solid white;
         transform: translateY(-2px);
     }
 
@@ -330,7 +333,7 @@
       pitch: 0,
       bearing: 0,
       antialias: true,
-      maxPitch: 85 // 重要修正：允許地圖傾斜到 85 度
+      maxPitch: 75 // 修正：最大允許 75 度，避免過度傾斜導致天空滑動過快
     });
 
     map.on('load', () => {
@@ -372,13 +375,13 @@
                 if (snapBackTimer) clearTimeout(snapBackTimer);
                 snapBackTimer = setTimeout(() => {
                     isUserInteracting = false;
-                }, 5000);
+                }, 5000); // 5秒後自動回到車輛視角
             }
         });
     });
   }
 
-  // ... (其餘路徑規劃與繪圖函式保持不變，包含之前修正的 findFirstSymbolLayer) ...
+  // ... (findFirstSymbolLayer, calculateRoute, drawBaseRoute 等保持不變) ...
   function findFirstSymbolLayer() {
       const layers = map.getStyle().layers;
       for (const layer of layers) {
@@ -518,7 +521,7 @@
   }
 
   // ==========================================
-  // 導航模式 (核心修改處：鎖定 Pitch)
+  // 導航模式 (重點修改處)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -536,11 +539,12 @@
       document.getElementById('btn-exit-nav').style.display = 'flex';
       closeStepsPanel();
 
-      // --- 鎖定傾角設定 ---
-      // 先設定 Max 為 85 (確保可以轉到這麼斜)
-      map.setMaxPitch(85);
-      // 再設定 Min 為 85 (強制鎖定，使用者無法轉回來)
-      map.setMinPitch(85);
+      // 修正：鎖定 Pitch 在 60 度 (標準導航視角)
+      // 60度既有 3D 感，又不會導致天空滑動過快
+      map.setMinPitch(60);
+      map.setMaxPitch(60);
+
+      // 注意：這裡已經移除 map.dragPan.disable()，所以使用者可以自由平移
 
       if (!navMarker) {
           const el = document.createElement('div');
@@ -550,12 +554,29 @@
           navMarker = new maplibregl.Marker({ 
               element: el, 
               rotationAlignment: 'map',
-              pitchAlignment: 'map' 
+              pitchAlignment: 'map' // 導航箭頭貼地
           })
           .setLngLat(startCoords)
           .addTo(map);
       } else {
           navMarker.addTo(map);
+      }
+
+      // 初始方向設定
+      let initialBearing = 0;
+      if (fullRouteCoords.length > 1) {
+          const startPt = turf.point(fullRouteCoords[0]);
+          const nextPt = turf.point(fullRouteCoords[1]);
+          initialBearing = turf.bearing(startPt, nextPt);
+          
+          navMarker.setRotation(initialBearing);
+          // 立即跳轉，Pitch 使用 60 度
+          map.jumpTo({
+              center: startCoords,
+              zoom: 19,
+              pitch: 60,
+              bearing: initialBearing
+          });
       }
 
       const handleNavUpdate = (e) => {
@@ -588,23 +609,31 @@
               const mLat = dLat * 111000;
               const mLng = dLng * 111000 * Math.cos(rawLat * Math.PI / 180);
               currentDist = Math.sqrt(mLat*mLat + mLng*mLng);
-              
               if (currentDist > 2) shouldUpdateBearing = true;
           } else {
               shouldUpdateBearing = true;
           }
 
           let targetBearing = map.getBearing();
-          if (shouldUpdateBearing && rawHeading !== null && !isNaN(rawHeading)) {
+          
+          if (rawHeading !== null && !isNaN(rawHeading) && rawHeading !== 0) {
               navMarker.setRotation(rawHeading);
               targetBearing = rawHeading;
+          } else if (shouldUpdateBearing) {
+              if (snapResult.index < fullRouteCoords.length - 1) {
+                  const p1 = turf.point(fullRouteCoords[snapResult.index]);
+                  const p2 = turf.point(fullRouteCoords[snapResult.index + 1]);
+                  const pathBearing = turf.bearing(p1, p2);
+                  navMarker.setRotation(pathBearing);
+                  targetBearing = pathBearing;
+              }
           }
 
           if (!isUserInteracting) {
               map.easeTo({
                   center: displayCoords,
                   zoom: 19, 
-                  pitch: 85, // 導航時強制 85 度
+                  pitch: 60, // 鎖定在 60 度
                   bearing: targetBearing,
                   duration: 1000, 
                   easing: (t) => t
@@ -624,11 +653,6 @@
       navLocationHandler = handleNavUpdate;
       geolocateControl.on('geolocate', navLocationHandler);
       geolocateControl.trigger();
-
-      if (startCoords) {
-          // 初始動畫也轉到 85 度
-          map.easeTo({ center: startCoords, zoom: 19, pitch: 85, duration: 1500 });
-      }
 
       speak("開始導航");
   }
@@ -654,9 +678,9 @@
       closeStepsPanel();
       navFooter.classList.add('show');
       
-      // 解除鎖定：恢復 minPitch 為 0，讓使用者可以看回俯視圖
+      // 恢復視角設定
       map.setMinPitch(0);
-      map.setMaxPitch(85); 
+      map.setMaxPitch(75); 
 
       map.easeTo({ pitch: 0, zoom: 16, bearing: 0 });
       
@@ -665,7 +689,7 @@
       }
   }
 
-  // ... (其餘數學運算與輔助功能保持不變) ...
+  // ... (數學運算與輔助功能保持不變) ...
   function getNearestPointOnLine(pt, lineCoords) {
       let minDist = Infinity;
       let nearestPoint = pt;
@@ -803,13 +827,20 @@
       });
   }
 
+  // 修改：設定起點圖釘
   function setStartPoint(lngLat, name) {
       if (isNavigating) return;
       startCoords = lngLat;
       document.getElementById('start-input').value = name;
       document.getElementById('suggestions').style.display = 'none';
       if (startMarker) startMarker.remove();
-      startMarker = new maplibregl.Marker({ color: '#1a73e8', draggable: true }).setLngLat(lngLat).addTo(map);
+      
+      // pitchAlignment: 'viewport' 確保圖釘直立，不會貼地變形
+      startMarker = new maplibregl.Marker({ 
+          color: '#1a73e8', 
+          draggable: true,
+          pitchAlignment: 'viewport' 
+      }).setLngLat(lngLat).addTo(map);
       
       startMarker.on('dragend', () => { 
           startCoords = startMarker.getLngLat(); 
@@ -821,13 +852,20 @@
       checkReadyState();
   }
 
+  // 修改：設定終點圖釘
   function setEndPoint(lngLat, name) {
       if (isNavigating) return;
       endCoords = lngLat;
       document.getElementById('end-input').value = name;
       document.getElementById('suggestions').style.display = 'none';
       if (endMarker) endMarker.remove();
-      endMarker = new maplibregl.Marker({ color: '#d93025', draggable: true }).setLngLat(lngLat).addTo(map);
+      
+      // pitchAlignment: 'viewport' 確保圖釘直立，不會貼地變形
+      endMarker = new maplibregl.Marker({ 
+          color: '#d93025', 
+          draggable: true,
+          pitchAlignment: 'viewport'
+      }).setLngLat(lngLat).addTo(map);
       
       endMarker.on('dragend', () => { 
           endCoords = endMarker.getLngLat(); 
