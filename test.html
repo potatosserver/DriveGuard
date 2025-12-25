@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (軸向修復版)</title>
+  <title>3D 智能語音導航 (完美修正版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -285,17 +285,15 @@
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
   const carModelUrl = 'https://raw.githubusercontent.com/potatosserver/DriveGuard/main/Red%20Car.glb';
 
-  // --- [車輛模型設定區] ---
+  // --- [車輛模型設定區] (最終確認版) ---
   const carModelConfig = {
-      // 1. 大小縮放 (依照您的測試)
+      // 1. 大小縮放
       scale: 4, 
 
-      // 2. 旋轉修正：
-      // 因為我移除了隱藏的 90 度修正，所以這裡必須設為 90 讓車子從「躺著」變成「站著」
-      // 如果 90 還是怪怪的，請試試 -90 或 0。但根據 GLB 特性，90 通常是正解。
+      // 2. 旋轉修正 (讓車子站起來)
       rotateX: 90,   
       
-      // 3. 車頭修正：
+      // 3. 車頭修正 (背對轉正)
       rotateY: 180, 
       
       // 4. 側傾修正
@@ -390,7 +388,6 @@
     });
   }
 
-  // --- 關鍵修改：createCarLayer ---
   function createCarLayer(startLng, startLat) {
       return {
           id: '3d-car-model',
@@ -418,11 +415,10 @@
               loader.load(carModelUrl, (gltf) => {
                   this.scene.add(gltf.scene);
                   
-                  // 套用上方的參數設定 (靜態修正)
+                  // 套用靜態修正 (大小、翻正、調頭)
                   const s = carModelConfig.scale;
                   gltf.scene.scale.set(s, s, s); 
                   
-                  // 將「角度」轉為「弧度」並套用到模型本身
                   gltf.scene.rotation.x = carModelConfig.rotateX * (Math.PI / 180);
                   gltf.scene.rotation.y = carModelConfig.rotateY * (Math.PI / 180);
                   gltf.scene.rotation.z = carModelConfig.rotateZ * (Math.PI / 180);
@@ -441,10 +437,7 @@
               const modelOrigin = [carConfig.lng, carConfig.lat];
               const modelAltitude = 0;
               
-              // --- 關鍵修正區 ---
-              // 舊代碼是 [Math.PI / 2, 0, ...]，這會導致 X 軸與車輛的 Heading 混淆。
-              // 現在我們只在這裡處理「Heading (Z軸旋轉)」。
-              // X 軸的翻正已經完全交給上方的 loader (gltf.scene.rotation) 處理了。
+              // 僅套用 Z 軸旋轉 (Heading)，避免干擾到 X/Y 軸的翻正
               const modelRotate = [0, 0, carConfig.rotation * Math.PI / 180]; 
 
               const modelAsMercatorCoordinate = maplibregl.MercatorCoordinate.fromLngLat(
@@ -462,7 +455,6 @@
                   scale: modelAsMercatorCoordinate.meterInMercatorCoordinateUnits()
               };
 
-              // 這裡只計算 Z 軸旋轉 (Heading)，避免 X/Y 軸干擾
               const rotationX = new THREE.Matrix4().makeRotationAxis(
                   new THREE.Vector3(1, 0, 0), modelTransform.rotateX
               );
@@ -638,7 +630,7 @@
   }
 
   // ==========================================
-  // 導航模式
+  // 導航模式 (核心修正版)
   // ==========================================
   function enterNavigationMode() {
       if (!currentRoutePath || fullRouteCoords.length === 0) return;
@@ -646,7 +638,7 @@
       isNavigating = true;
       lastSpokenText = "";
       isUserInteracting = false;
-      lastNavCoords = null;
+      lastNavCoords = null; 
       
       document.body.classList.add('nav-active');
 
@@ -659,13 +651,7 @@
       map.setMinPitch(60);
       map.setMaxPitch(60);
       
-      // --- 新版 3D 車輛 ---
-      // 1. 設定初始位置
-      carConfig.lng = startCoords.lng;
-      carConfig.lat = startCoords.lat;
-      carConfig.rotation = 0;
-
-      // 2. 計算初始朝向 (至少找前方 5 公尺的點)
+      // --- 1. 計算初始朝向 ---
       let initialBearing = 0;
       if (fullRouteCoords.length > 1) {
           let targetIndex = 1;
@@ -678,24 +664,27 @@
           }
           const finalTargetPt = turf.point(fullRouteCoords[targetIndex]);
           initialBearing = turf.bearing(startPt, finalTargetPt);
-          
-          carConfig.rotation = initialBearing; // 更新車輛角度
-
-          map.jumpTo({
-              center: startCoords,
-              zoom: 19,
-              pitch: 60,
-              bearing: initialBearing
-          });
       }
 
-      // 3. 加入 3D 車輛圖層
+      // --- 2. 立即強制設定車頭與地圖 ---
+      carConfig.lng = startCoords.lng;
+      carConfig.lat = startCoords.lat;
+      carConfig.rotation = initialBearing; // 強制車頭轉向路線方向
+
+      map.jumpTo({
+          center: startCoords,
+          zoom: 19,
+          pitch: 60,
+          bearing: initialBearing // 強制地圖轉向
+      });
+
+      // --- 3. 加入車輛圖層 ---
       if (!map.getLayer('3d-car-model')) {
          carLayer = createCarLayer(startCoords.lng, startCoords.lat);
-         // 將車輛圖層放在文字標籤層之下，但路線之上
          const firstSymbol = findFirstSymbolLayer();
          map.addLayer(carLayer, firstSymbol);
       }
+      map.triggerRepaint(); // 立即刷新，避免第一幀車子方向不對
 
       const handleNavUpdate = (e) => {
           if (!isNavigating) return;
@@ -717,7 +706,6 @@
 
           const displayCoords = snapResult.point; 
           
-          // 更新 3D 車輛位置
           carConfig.lng = displayCoords[0];
           carConfig.lat = displayCoords[1];
 
@@ -730,25 +718,30 @@
               const mLat = dLat * 111000;
               const mLng = dLng * 111000 * Math.cos(rawLat * Math.PI / 180);
               currentDist = Math.sqrt(mLat*mLat + mLng*mLng);
+              
+              // 移動超過 2 公尺才更新方向，避免靜止時亂轉
               if (currentDist > 2) shouldUpdateBearing = true;
           } else {
-              shouldUpdateBearing = true;
+              // 第一次定位：初始化座標，但不更新方向 (保留 initialBearing)
+              lastNavCoords = [rawLng, rawLat];
+              shouldUpdateBearing = false; 
           }
 
           let targetBearing = map.getBearing();
           
-          if (rawHeading !== null && !isNaN(rawHeading) && rawHeading !== 0) {
-              carConfig.rotation = rawHeading;       // 3D 車輛旋轉
+          if (shouldUpdateBearing && rawHeading !== null && !isNaN(rawHeading) && rawHeading !== 0) {
+              carConfig.rotation = rawHeading;
               targetBearing = rawHeading;
           } else if (shouldUpdateBearing) {
               if (snapResult.index < fullRouteCoords.length - 1) {
                   const p1 = turf.point(fullRouteCoords[snapResult.index]);
                   const p2 = turf.point(fullRouteCoords[snapResult.index + 1]);
                   const pathBearing = turf.bearing(p1, p2);
-                  carConfig.rotation = pathBearing;     // 3D 車輛旋轉
+                  carConfig.rotation = pathBearing;
                   targetBearing = pathBearing;
               }
           }
+          // 如果 shouldUpdateBearing 為 false，則保持原來的 carConfig.rotation (即 initialBearing)
 
           if (!isUserInteracting) {
               map.easeTo({
@@ -769,8 +762,6 @@
           }
 
           updateInstructionByProgress(snapResult);
-          
-          // 觸發重繪以更新車輛位置
           map.triggerRepaint();
       };
 
