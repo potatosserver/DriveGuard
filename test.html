@@ -2,7 +2,7 @@
 <html lang="zh-TW">
 <head>
   <meta charset="utf-8" />
-  <title>3D 智能語音導航 (3D 車輛修正版)</title>
+  <title>3D 智能語音導航 (軸向修復版)</title>
   <meta name="viewport" content="initial-scale=1,maximum-scale=1,user-scalable=no" />
 
   <!-- MapLibre GL JS -->
@@ -11,7 +11,7 @@
   <!-- Turf.js 用於計算方位角 -->
   <script src="https://unpkg.com/@turf/turf@6.5.0/turf.min.js"></script>
 
-  <!-- Three.js & GLTFLoader (用於載入 3D 車輛模型) -->
+  <!-- Three.js & GLTFLoader -->
   <script src="https://unpkg.com/three@0.147.0/build/three.min.js"></script>
   <script src="https://unpkg.com/three@0.147.0/examples/js/loaders/GLTFLoader.js"></script>
 
@@ -285,20 +285,20 @@
   const style3D = 'https://tiles.openfreemap.org/styles/liberty';
   const carModelUrl = 'https://raw.githubusercontent.com/potatosserver/DriveGuard/main/Red%20Car.glb';
 
-  // --- [車輛模型參數校正] ---
+  // --- [車輛模型設定區] ---
   const carModelConfig = {
-      // 大小設定 (您測試後覺得 4 比較剛好)
+      // 1. 大小縮放 (依照您的測試)
       scale: 4, 
 
-      // 旋轉修正 (角度 Degree)：
-      // 您的截圖顯示車子側躺，將 rotateX 設為 90 度可讓它站起來。
-      // 如果 90 度後變成四腳朝天，請改成 -90 (或 270)。
+      // 2. 旋轉修正：
+      // 因為我移除了隱藏的 90 度修正，所以這裡必須設為 90 讓車子從「躺著」變成「站著」
+      // 如果 90 還是怪怪的，請試試 -90 或 0。但根據 GLB 特性，90 通常是正解。
       rotateX: 90,   
       
-      // 車頭方向修正
+      // 3. 車頭修正：
       rotateY: 180, 
       
-      // 側傾修正 (通常為 0)
+      // 4. 側傾修正
       rotateZ: 0   
   };
   // ===========================================
@@ -307,7 +307,6 @@
   let startCoords = null, endCoords = null;
   let startMarker = null, endMarker = null;
   
-  // --- 3D 車輛相關變數 ---
   let carLayer = null;
   let carConfig = { lng: 121.5, lat: 25.04, rotation: 0 };
   
@@ -391,6 +390,7 @@
     });
   }
 
+  // --- 關鍵修改：createCarLayer ---
   function createCarLayer(startLng, startLat) {
       return {
           id: '3d-car-model',
@@ -418,11 +418,11 @@
               loader.load(carModelUrl, (gltf) => {
                   this.scene.add(gltf.scene);
                   
-                  // 套用上方的參數設定
+                  // 套用上方的參數設定 (靜態修正)
                   const s = carModelConfig.scale;
                   gltf.scene.scale.set(s, s, s); 
                   
-                  // 將「角度」轉為「弧度」並套用
+                  // 將「角度」轉為「弧度」並套用到模型本身
                   gltf.scene.rotation.x = carModelConfig.rotateX * (Math.PI / 180);
                   gltf.scene.rotation.y = carModelConfig.rotateY * (Math.PI / 180);
                   gltf.scene.rotation.z = carModelConfig.rotateZ * (Math.PI / 180);
@@ -440,9 +440,12 @@
           render: function(gl, matrix) {
               const modelOrigin = [carConfig.lng, carConfig.lat];
               const modelAltitude = 0;
-              // 這裡進行地圖座標系的轉換，請勿更動
-              // Math.PI / 2 是為了配合 MapLibre 的 Z-up 座標系
-              const modelRotate = [Math.PI / 2, 0, carConfig.rotation * Math.PI / 180]; 
+              
+              // --- 關鍵修正區 ---
+              // 舊代碼是 [Math.PI / 2, 0, ...]，這會導致 X 軸與車輛的 Heading 混淆。
+              // 現在我們只在這裡處理「Heading (Z軸旋轉)」。
+              // X 軸的翻正已經完全交給上方的 loader (gltf.scene.rotation) 處理了。
+              const modelRotate = [0, 0, carConfig.rotation * Math.PI / 180]; 
 
               const modelAsMercatorCoordinate = maplibregl.MercatorCoordinate.fromLngLat(
                   modelOrigin,
@@ -459,6 +462,7 @@
                   scale: modelAsMercatorCoordinate.meterInMercatorCoordinateUnits()
               };
 
+              // 這裡只計算 Z 軸旋轉 (Heading)，避免 X/Y 軸干擾
               const rotationX = new THREE.Matrix4().makeRotationAxis(
                   new THREE.Vector3(1, 0, 0), modelTransform.rotateX
               );
